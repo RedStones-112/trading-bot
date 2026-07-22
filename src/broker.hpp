@@ -2,6 +2,11 @@
 #include <string>
 #include <vector>
 
+struct StockInfo {
+    std::string code;
+    std::string name;
+};
+
 // Common interface so main.cpp can run against a real broker (KisClient) or a
 // local synthetic one (MockBroker) without caring which.
 class IBroker {
@@ -12,6 +17,9 @@ public:
 
     // Human-readable name for a 6-digit KRX code (e.g. "005930" -> "삼성전자").
     virtual std::string getStockName(const std::string& code) = 0;
+
+    // Top `count` stocks by trading volume -- the candidate universe to scan for a pick.
+    virtual std::vector<StockInfo> getTopVolumeStocks(int count) = 0;
 
     // Latest traded price for a 6-digit KRX code (e.g. "005930" = Samsung Electronics).
     virtual double getCurrentPrice(const std::string& code) = 0;

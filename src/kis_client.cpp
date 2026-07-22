@@ -87,6 +87,39 @@ std::string KisClient::getStockName(const std::string& code) {
     return j.at("output").value("hts_kor_isnm", code);
 }
 
+std::vector<StockInfo> KisClient::getTopVolumeStocks(int count) {
+    // 거래량순위 (volume rank) -- candidate universe for "which stock looks best right now".
+    std::string query =
+        "FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=0000"
+        "&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=0&FID_TRGT_CLS_CODE=111111111"
+        "&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0"
+        "&FID_VOL_CNT=0&FID_INPUT_DATE_1=0";
+    auto body = request("/uapi/domestic-stock/v1/quotations/volume-rank", "GET", "FHPST01710000", query, true);
+    auto j = json::parse(body);
+
+    // Leveraged/inverse ETFs & ETNs dominate raw volume rankings but decay over time and are
+    // far riskier than ordinary shares for a plain SMA-crossover strategy -- exclude them.
+    static const std::vector<std::string> etfMarkers = {
+        "레버리지", "인버스", "KODEX", "TIGER", "KBSTAR", "SOL ", "ARIRANG", "KINDEX", "HANARO", "KOSEF"
+    };
+    auto looksLikeEtf = [&](const std::string& name) {
+        for (auto& marker : etfMarkers)
+            if (name.find(marker) != std::string::npos) return true;
+        return false;
+    };
+
+    std::vector<StockInfo> result;
+    for (auto& row : j.at("output")) {
+        if ((int)result.size() >= count) break;
+        std::string c = row.value("mksc_shrn_iscd", "");
+        if (c.empty()) continue;
+        std::string name = row.value("hts_kor_isnm", c);
+        if (looksLikeEtf(name)) continue;
+        result.push_back({c, name});
+    }
+    return result;
+}
+
 std::vector<double> KisClient::getDailyCloses(const std::string& code, int count) {
     std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code +
                          "&FID_INPUT_DATE_1=" + dateOffset(count * 2 + 10) +

@@ -17,6 +17,7 @@ public:
 
     std::string getStockName(const std::string& code) override;
     double getCurrentPrice(const std::string& code) override;
+    std::vector<StockInfo> getTopVolumeStocks(int count) override;
 
     std::vector<double> getDailyCloses(const std::string& code, int count) override;
 

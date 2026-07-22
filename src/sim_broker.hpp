@@ -12,6 +12,7 @@ public:
 
     void authenticate() override { kis_.authenticate(); }
     std::string getStockName(const std::string& code) override { return kis_.getStockName(code); }
+    std::vector<StockInfo> getTopVolumeStocks(int count) override { return kis_.getTopVolumeStocks(count); }
     double getCurrentPrice(const std::string& code) override { return kis_.getCurrentPrice(code); }
     std::vector<double> getDailyCloses(const std::string& code, int count) override { return kis_.getDailyCloses(code, count); }
     std::string placeMarketOrder(const std::string& code, Side side, int qty) override;

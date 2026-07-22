@@ -32,3 +32,17 @@ inline Signal smaCrossSignal(const std::vector<double>& closes, int shortPeriod,
 
     return Signal::Hold;
 }
+
+// Relative gap between short and long SMA (positive = short above long, i.e. bullish).
+// Used to rank multiple Buy-signal candidates against each other -- bigger gap = stronger cross.
+inline double smaMomentum(const std::vector<double>& closes, int shortPeriod, int longPeriod) {
+    if ((int)closes.size() < longPeriod)
+        throw std::runtime_error("not enough price history for SMA(" + std::to_string(longPeriod) + ")");
+    auto sma = [&](int period) {
+        double sum = std::accumulate(closes.end() - period, closes.end(), 0.0);
+        return sum / period;
+    };
+    double shortNow = sma(shortPeriod);
+    double longNow = sma(longPeriod);
+    return (shortNow - longNow) / longNow;
+}
