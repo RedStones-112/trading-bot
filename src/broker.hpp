@@ -5,6 +5,7 @@
 struct StockInfo {
     std::string code;
     std::string name;
+    double price; // current price, as reported by the ranking query itself
 };
 
 // Common interface so main.cpp can run against a real broker (KisClient) or a

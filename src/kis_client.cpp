@@ -115,7 +115,8 @@ std::vector<StockInfo> KisClient::getTopVolumeStocks(int count) {
         if (c.empty()) continue;
         std::string name = row.value("hts_kor_isnm", c);
         if (looksLikeEtf(name)) continue;
-        result.push_back({c, name});
+        double price = std::stod(row.value("stck_prpr", "0"));
+        result.push_back({c, name, price});
     }
     return result;
 }

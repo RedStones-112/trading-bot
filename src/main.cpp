@@ -115,14 +115,13 @@ int main() {
                 for (auto& c : candidates) {
                     std::string label = c.name + "(" + c.code + ")";
                     try {
+                        // c.price came from the ranking call itself -- no separate quote needed.
                         auto closes = client->getDailyCloses(c.code, longPeriod + 5);
                         std::this_thread::sleep_for(apiPause);
-                        double current = client->getCurrentPrice(c.code);
-                        std::this_thread::sleep_for(apiPause);
-                        closes.push_back(current);
+                        closes.push_back(c.price);
 
                         Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
-                        log("  " + label + " 현재가=" + krw(current) + " 시그널=" + signalStr(sig));
+                        log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig));
 
                         if (sig == Signal::Buy) {
                             double momentum = smaMomentum(closes, shortPeriod, longPeriod);
@@ -130,7 +129,7 @@ int main() {
                                 bestMomentum = momentum;
                                 bestCode = c.code;
                                 bestName = c.name;
-                                bestCurrent = current;
+                                bestCurrent = c.price;
                                 bestCloses = closes;
                             }
                         }

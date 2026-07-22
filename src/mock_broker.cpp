@@ -3,7 +3,7 @@
 
 namespace {
 // Fixed pretend universe so mock mode can exercise the scan/pick logic without any API.
-const std::vector<StockInfo> kMockUniverse = {
+const std::vector<std::pair<std::string, std::string>> kMockUniverse = {
     {"000001", "가상전자"}, {"000002", "가상바이오"}, {"000003", "가상화학"},
     {"000004", "가상은행"}, {"000005", "가상건설"},
 };
@@ -27,13 +27,18 @@ MockBroker::Series& MockBroker::seriesFor(const std::string& code) {
 }
 
 std::string MockBroker::getStockName(const std::string& code) {
-    for (auto& s : kMockUniverse) if (s.code == code) return s.name;
+    for (auto& s : kMockUniverse) if (s.first == code) return s.second;
     return "가상종목";
 }
 
 std::vector<StockInfo> MockBroker::getTopVolumeStocks(int count) {
     int take = std::min(count, (int)kMockUniverse.size());
-    return std::vector<StockInfo>(kMockUniverse.begin(), kMockUniverse.begin() + take);
+    std::vector<StockInfo> result;
+    for (int i = 0; i < take; i++) {
+        const auto& [code, name] = kMockUniverse[i];
+        result.push_back({code, name, seriesFor(code).lastPrice});
+    }
+    return result;
 }
 
 double MockBroker::getCurrentPrice(const std::string& code) {
