@@ -1,13 +1,17 @@
 #include "broker.hpp"
 #include "kis_client.hpp"
 #include "mock_broker.hpp"
+#include "news_crawler.hpp"
 #include "sim_broker.hpp"
 #include "strategy.hpp"
 #include "../third_party/json.hpp"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <mutex>
+#include <atomic>
 #include <ctime>
 #include <iomanip>
 #include <memory>
@@ -33,6 +37,14 @@ static void log(const std::string& msg) {
     f << line << "\n";
 }
 
+// One line per completed trade -- a clean audit trail separate from the noisy scan log.
+static void logTrade(const std::string& side, const std::string& code, const std::string& name,
+                      int qty, double price, double feeRate, double taxRate, double netProfit) {
+    std::ofstream f("trades.log", std::ios::app);
+    f << timestamp() << "," << side << "," << code << "," << name << "," << qty << ","
+      << price << "," << feeRate << "," << taxRate << "," << netProfit << "\n";
+}
+
 static std::string krw(double v) {
     return std::to_string((long long)std::llround(v)) + "원";
 }
@@ -41,13 +53,49 @@ static std::string signalStr(Signal s) {
     return s == Signal::Buy ? "BUY" : s == Signal::Sell ? "SELL" : "HOLD";
 }
 
+// Crude mapping from a keyword-count sentiment score to a pseudo-probability of the
+// trade working out: each net keyword hit nudges it 5%, clamped to a sane range. This
+// is a heuristic, not a calibrated statistical estimate -- there's no backtest behind it.
+static double probabilityFromSentiment(double sentiment) {
+    return std::clamp(0.5 + sentiment * 0.05, 0.05, 0.95);
+}
+
 struct Position {
     bool holding = false;
     std::string code, name;
     int qty = 0;
     double avgBuyPrice = 0.0;
+    double lastKnownPrice = 0.0;
     std::vector<double> baseCloses; // historical closes for `code`, not including today
 };
+
+struct SharedState {
+    std::mutex mtx;
+    Position pos;
+};
+
+// Rewrites holdings.txt every 5 seconds regardless of poll_seconds, so "what does the
+// bot hold right now" is always answerable by just looking at a file.
+static void statusWriterLoop(SharedState* shared, std::atomic<bool>* stop) {
+    while (!stop->load()) {
+        {
+            std::lock_guard<std::mutex> lock(shared->mtx);
+            std::ofstream f("holdings.txt", std::ios::trunc);
+            f << "갱신 시각: " << timestamp() << "\n";
+            if (shared->pos.holding) {
+                double pnl = (shared->pos.lastKnownPrice - shared->pos.avgBuyPrice) * shared->pos.qty;
+                f << "보유 종목: " << shared->pos.name << "(" << shared->pos.code << ")\n";
+                f << "수량: " << shared->pos.qty << "주\n";
+                f << "평단가: " << krw(shared->pos.avgBuyPrice) << "\n";
+                f << "현재가: " << krw(shared->pos.lastKnownPrice) << "\n";
+                f << "평가손익(세전): " << krw(pnl) << "\n";
+            } else {
+                f << "보유 종목 없음 (스캔 중)\n";
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+}
 
 int main() {
     SetConsoleOutputCP(CP_UTF8); // source strings are UTF-8; console defaults to the system codepage otherwise
@@ -80,9 +128,19 @@ int main() {
     int shortPeriod = cfg.value("sma_short", 5);
     int longPeriod = cfg.value("sma_long", 20);
     int pollSeconds = cfg.value("poll_seconds", 60);
+    double feeRate = cfg.value("fee_rate", 0.00015);       // 매매수수료, 매수/매도 양쪽 -- 실제 요율은 증권사/상품에 따라 다름, 확인 필요
+    double taxRate = cfg.value("tax_rate", 0.0018);        // 증권거래세, 매도 시에만 -- 시장/시기에 따라 바뀌므로 확인 필요
+    double takeProfitPct = cfg.value("take_profit_pct", 0.02); // 수수료/세금 차감 후 이 이상 순이익이면 매도
+    std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
+        "https://www.mk.co.kr/rss/50200011/",
+        "https://www.hankyung.com/feed/economy",
+        "https://www.yna.co.kr/rss/economy.xml",
+    });
+    NewsCrawler news(newsFeeds);
 
     log("starting trading bot: watchlist=" + std::to_string(watchlistSize) + " sma(" +
-        std::to_string(shortPeriod) + "," + std::to_string(longPeriod) + ") mode=" + mode);
+        std::to_string(shortPeriod) + "," + std::to_string(longPeriod) + ") take_profit=" +
+        std::to_string(takeProfitPct * 100) + "% mode=" + mode);
 
     try {
         client->authenticate();
@@ -98,17 +156,26 @@ int main() {
     // Mock mode is local computation, not a real API, so there's nothing to pace.
     const auto apiPause = std::chrono::milliseconds(mode == "mock" ? 0 : 1100);
 
-    Position pos;
+    SharedState shared;
+    std::atomic<bool> stopStatusWriter{false};
+    std::thread statusThread(statusWriterLoop, &shared, &stopStatusWriter);
 
     while (true) {
         try {
-            if (!pos.holding) {
+            bool holding;
+            { std::lock_guard<std::mutex> lock(shared.mtx); holding = shared.pos.holding; }
+
+            if (!holding) {
                 log("종목 스캔 중 (거래량 상위 " + std::to_string(watchlistSize) + "개)...");
                 auto candidates = client->getTopVolumeStocks(watchlistSize);
                 std::this_thread::sleep_for(apiPause);
 
+                // mock mode stays fully offline -- no real HTTP calls, including news.
+                auto headlines = (mode == "mock") ? std::vector<NewsItem>{} : news.fetchHeadlines();
+                log("뉴스 " + std::to_string(headlines.size()) + "건 수집");
+
                 std::string bestCode, bestName;
-                double bestMomentum = -1e18;
+                double bestEv = -1e18;
                 double bestCurrent = 0.0;
                 std::vector<double> bestCloses;
 
@@ -121,12 +188,17 @@ int main() {
                         closes.push_back(c.price);
 
                         Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
-                        log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig));
+                        double sentiment = NewsCrawler::scoreSentiment(headlines, c.name);
+                        log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig) +
+                            " 뉴스감성=" + std::to_string(sentiment));
 
                         if (sig == Signal::Buy) {
-                            double momentum = smaMomentum(closes, shortPeriod, longPeriod);
-                            if (momentum > bestMomentum) {
-                                bestMomentum = momentum;
+                            // 기댓값 = 얻을 이득 x 얻을 확률. 이득은 익절 목표치, 확률은 뉴스 감성에서 추정.
+                            double probability = probabilityFromSentiment(sentiment);
+                            double gain = c.price * takeProfitPct;
+                            double ev = gain * probability;
+                            if (ev > bestEv) {
+                                bestEv = ev;
                                 bestCode = c.code;
                                 bestName = c.name;
                                 bestCurrent = c.price;
@@ -140,34 +212,55 @@ int main() {
 
                 if (!bestCode.empty()) {
                     auto odno = client->placeMarketOrder(bestCode, IBroker::Side::Buy, qty);
-                    pos.holding = true;
-                    pos.code = bestCode;
-                    pos.name = bestName;
-                    pos.qty = qty;
-                    pos.avgBuyPrice = bestCurrent;
-                    pos.baseCloses = std::vector<double>(bestCloses.begin(), bestCloses.end() - 1);
+                    {
+                        std::lock_guard<std::mutex> lock(shared.mtx);
+                        shared.pos.holding = true;
+                        shared.pos.code = bestCode;
+                        shared.pos.name = bestName;
+                        shared.pos.qty = qty;
+                        shared.pos.avgBuyPrice = bestCurrent;
+                        shared.pos.lastKnownPrice = bestCurrent;
+                        shared.pos.baseCloses = std::vector<double>(bestCloses.begin(), bestCloses.end() - 1);
+                    }
                     log(">>> 매수 체결: " + bestName + "(" + bestCode + ") " + std::to_string(qty) +
-                        "주 @ " + krw(bestCurrent) + " (주문번호 " + odno + ", 모멘텀 " +
-                        std::to_string(bestMomentum) + ")");
+                        "주 @ " + krw(bestCurrent) + " (주문번호 " + odno + ", 기댓값 " +
+                        std::to_string(bestEv) + ")");
+                    logTrade("BUY", bestCode, bestName, qty, bestCurrent, feeRate, 0.0, 0.0);
                 } else {
                     log("매수 신호를 보이는 종목 없음, 다음 스캔까지 대기");
                 }
             } else {
-                std::string label = pos.name + "(" + pos.code + ")";
-                double current = client->getCurrentPrice(pos.code);
-                auto closes = pos.baseCloses;
+                std::string code, name;
+                int posQty;
+                double avgBuyPrice;
+                std::vector<double> baseCloses;
+                { std::lock_guard<std::mutex> lock(shared.mtx);
+                  code = shared.pos.code; name = shared.pos.name; posQty = shared.pos.qty;
+                  avgBuyPrice = shared.pos.avgBuyPrice; baseCloses = shared.pos.baseCloses; }
+
+                std::string label = name + "(" + code + ")";
+                double current = client->getCurrentPrice(code);
+                auto closes = baseCloses;
                 closes.push_back(current);
 
                 Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
-                double pnl = (current - pos.avgBuyPrice) * pos.qty;
+                double pnl = (current - avgBuyPrice) * posQty;
+                double netPct = netProfitPct(avgBuyPrice, current, feeRate, taxRate);
                 log(label + " 현재가=" + krw(current) + " 시그널=" + signalStr(sig) + " 보유=" +
-                    std::to_string(pos.qty) + "주, 평단가 " + krw(pos.avgBuyPrice) + ", 평가손익 " + krw(pnl));
+                    std::to_string(posQty) + "주, 평단가 " + krw(avgBuyPrice) + ", 평가손익 " + krw(pnl) +
+                    ", 순손익률 " + std::to_string(netPct * 100) + "%");
 
-                if (sig == Signal::Sell) {
-                    auto odno = client->placeMarketOrder(pos.code, IBroker::Side::Sell, pos.qty);
-                    log("<<< 매도 체결: " + label + " " + std::to_string(pos.qty) + "주 @ " + krw(current) +
-                        " (주문번호 " + odno + "), 손익 " + krw(pnl));
-                    pos = Position{};
+                { std::lock_guard<std::mutex> lock(shared.mtx); shared.pos.lastKnownPrice = current; }
+
+                bool takeProfitHit = netPct >= takeProfitPct;
+                if (sig == Signal::Sell || takeProfitHit) {
+                    auto odno = client->placeMarketOrder(code, IBroker::Side::Sell, posQty);
+                    double netProfit = netPct * avgBuyPrice * posQty;
+                    log("<<< 매도 체결: " + label + " " + std::to_string(posQty) + "주 @ " + krw(current) +
+                        " (주문번호 " + odno + ", 사유 " + (takeProfitHit ? "익절" : "데드크로스") +
+                        "), 수수료/세금 차감 순손익 " + krw(netProfit));
+                    logTrade("SELL", code, name, posQty, current, feeRate, taxRate, netProfit);
+                    { std::lock_guard<std::mutex> lock(shared.mtx); shared.pos = Position{}; }
                 }
             }
         } catch (const std::exception& e) {

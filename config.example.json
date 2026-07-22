@@ -9,5 +9,13 @@
   "qty": 1,
   "sma_short": 5,
   "sma_long": 20,
-  "poll_seconds": 5
+  "poll_seconds": 5,
+  "fee_rate": 0.00015,
+  "tax_rate": 0.0018,
+  "take_profit_pct": 0.02,
+  "news_feeds": [
+    "https://www.mk.co.kr/rss/50200011/",
+    "https://www.hankyung.com/feed/economy",
+    "https://www.yna.co.kr/rss/economy.xml"
+  ]
 }

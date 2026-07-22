@@ -1,4 +1,6 @@
 config.json
 trading.log
+trades.log
+holdings.txt
 sim_fills.log
 build/

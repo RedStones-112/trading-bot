@@ -26,6 +26,7 @@ private:
         double lastPrice;
     };
     Series& seriesFor(const std::string& code);
+    double advance(Series& s); // one random-walk step, appended to history
 
     double startPrice_;
     std::map<std::string, Series> series_;

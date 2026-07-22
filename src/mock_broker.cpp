@@ -36,18 +36,23 @@ std::vector<StockInfo> MockBroker::getTopVolumeStocks(int count) {
     std::vector<StockInfo> result;
     for (int i = 0; i < take; i++) {
         const auto& [code, name] = kMockUniverse[i];
-        result.push_back({code, name, seriesFor(code).lastPrice});
+        // Real KIS's ranking response reflects the live market on every call, so advance
+        // the mock's random walk here too -- otherwise scan-time prices never move.
+        result.push_back({code, name, advance(seriesFor(code))});
     }
     return result;
 }
 
-double MockBroker::getCurrentPrice(const std::string& code) {
-    Series& s = seriesFor(code);
+double MockBroker::advance(Series& s) {
     std::normal_distribution<double> step(0.0, s.lastPrice * 0.005);
     s.lastPrice = std::max(1.0, s.lastPrice + step(rng_));
     s.history.push_back(s.lastPrice);
     if (s.history.size() > 500) s.history.pop_front();
     return s.lastPrice;
+}
+
+double MockBroker::getCurrentPrice(const std::string& code) {
+    return advance(seriesFor(code));
 }
 
 std::vector<double> MockBroker::getDailyCloses(const std::string& code, int count) {

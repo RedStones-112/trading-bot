@@ -46,3 +46,11 @@ inline double smaMomentum(const std::vector<double>& closes, int shortPeriod, in
     double longNow = sma(longPeriod);
     return (shortNow - longNow) / longNow;
 }
+
+// Net profit fraction of a round-trip trade after commission (both legs) and the
+// securities transaction tax (sell leg only, per KRX convention). Positive = profit.
+inline double netProfitPct(double buyPrice, double sellPrice, double feeRate, double taxRate) {
+    double buyCost = buyPrice * (1 + feeRate);
+    double sellProceeds = sellPrice * (1 - feeRate - taxRate);
+    return (sellProceeds - buyCost) / buyCost;
+}
