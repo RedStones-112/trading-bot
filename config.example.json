@@ -1,13 +1,14 @@
 {
+  "mode": "mock",
+  "mock_start_price": 70000.0,
   "appkey": "YOUR_APP_KEY",
   "appsecret": "YOUR_APP_SECRET",
   "cano": "12345678",
   "acnt_prdt_cd": "01",
-  "paper_trading": true,
   "code": "005930",
   "qty": 1,
   "sma_short": 5,
   "sma_long": 20,
-  "poll_seconds": 60,
+  "poll_seconds": 5,
   "start_holding": false
 }

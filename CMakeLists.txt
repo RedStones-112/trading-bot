@@ -7,7 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(trading_bot
     src/main.cpp
     src/kis_client.cpp
+    src/mock_broker.cpp
+    src/sim_broker.cpp
     src/http_client.cpp
 )
 
 target_link_libraries(trading_bot PRIVATE winhttp)
+
+add_executable(test_strategy
+    tests/test_strategy.cpp
+    src/mock_broker.cpp
+)

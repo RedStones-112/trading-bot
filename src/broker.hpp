@@ -1,0 +1,22 @@
+#pragma once
+#include <string>
+#include <vector>
+
+// Common interface so main.cpp can run against a real broker (KisClient) or a
+// local synthetic one (MockBroker) without caring which.
+class IBroker {
+public:
+    virtual ~IBroker() = default;
+
+    virtual void authenticate() = 0;
+
+    // Latest traded price for a 6-digit KRX code (e.g. "005930" = Samsung Electronics).
+    virtual double getCurrentPrice(const std::string& code) = 0;
+
+    // Most recent `count` daily close prices, oldest first.
+    virtual std::vector<double> getDailyCloses(const std::string& code, int count) = 0;
+
+    enum class Side { Buy, Sell };
+    // Market order (시장가). Returns an order id, or throws on rejection.
+    virtual std::string placeMarketOrder(const std::string& code, Side side, int qty) = 0;
+};
