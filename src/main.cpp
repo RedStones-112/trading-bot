@@ -169,6 +169,11 @@ int main() {
                 log("종목 스캔 중 (거래량 상위 " + std::to_string(watchlistSize) + "개)...");
                 auto candidates = client->getTopVolumeStocks(watchlistSize);
                 std::this_thread::sleep_for(apiPause);
+                if ((int)candidates.size() < watchlistSize) {
+                    log("참고: " + std::to_string(candidates.size()) + "개만 확보됨 (KIS 거래량순위 API는 세그먼트당 "
+                        "최대 약 30개까지만 주고, 3개 세그먼트를 합쳐도 최대 약 90개 -- 거기서 레버리지/인버스 "
+                        "ETF·ETN을 필터링으로 뺀 나머지만 후보가 됨. watchlist_size를 더 키워도 이 이상은 못 늘어남)");
+                }
 
                 // mock mode stays fully offline -- no real HTTP calls, including news.
                 auto headlines = (mode == "mock") ? std::vector<NewsItem>{} : news.fetchHeadlines();

@@ -6,6 +6,9 @@
 #include <iomanip>
 #include <stdexcept>
 #include <algorithm>
+#include <set>
+#include <thread>
+#include <chrono>
 
 using json = nlohmann::json;
 
@@ -89,13 +92,11 @@ std::string KisClient::getStockName(const std::string& code) {
 
 std::vector<StockInfo> KisClient::getTopVolumeStocks(int count) {
     // 거래량순위 (volume rank) -- candidate universe for "which stock looks best right now".
-    std::string query =
-        "FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=0000"
-        "&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=0&FID_TRGT_CLS_CODE=111111111"
-        "&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0"
-        "&FID_VOL_CNT=0&FID_INPUT_DATE_1=0";
-    auto body = request("/uapi/domestic-stock/v1/quotations/volume-rank", "GET", "FHPST01710000", query, true);
-    auto j = json::parse(body);
+    // The API caps each query at ~30 rows regardless of FID_VOL_CNT. FID_INPUT_ISCD "0000" /
+    // "1001" / "2001" each return a different ~30-row list (confirmed live: near-zero overlap,
+    // "0000" skews toward the most liquid leveraged/inverse ETFs) -- querying all three and
+    // merging gets a meaningfully bigger, less ETF-heavy candidate pool than any one alone.
+    static const std::vector<std::string> segments = {"0000", "1001", "2001"};
 
     // Leveraged/inverse ETFs & ETNs dominate raw volume rankings but decay over time and are
     // far riskier than ordinary shares for a plain SMA-crossover strategy -- exclude them.
@@ -109,14 +110,28 @@ std::vector<StockInfo> KisClient::getTopVolumeStocks(int count) {
     };
 
     std::vector<StockInfo> result;
-    for (auto& row : j.at("output")) {
-        if ((int)result.size() >= count) break;
-        std::string c = row.value("mksc_shrn_iscd", "");
-        if (c.empty()) continue;
-        std::string name = row.value("hts_kor_isnm", c);
-        if (looksLikeEtf(name)) continue;
-        double price = std::stod(row.value("stck_prpr", "0"));
-        result.push_back({c, name, price});
+    std::set<std::string> seen;
+    for (size_t i = 0; i < segments.size() && (int)result.size() < count; i++) {
+        if (i > 0) std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+
+        std::string query =
+            "FID_COND_MRKT_DIV_CODE=J&FID_COND_SCR_DIV_CODE=20171&FID_INPUT_ISCD=" + segments[i] +
+            "&FID_DIV_CLS_CODE=0&FID_BLNG_CLS_CODE=0&FID_TRGT_CLS_CODE=111111111"
+            "&FID_TRGT_EXLS_CLS_CODE=000000000&FID_INPUT_PRICE_1=0&FID_INPUT_PRICE_2=0"
+            "&FID_VOL_CNT=0&FID_INPUT_DATE_1=0";
+        auto body = request("/uapi/domestic-stock/v1/quotations/volume-rank", "GET", "FHPST01710000", query, true);
+        auto j = json::parse(body);
+
+        for (auto& row : j.at("output")) {
+            if ((int)result.size() >= count) break;
+            std::string c = row.value("mksc_shrn_iscd", "");
+            if (c.empty() || seen.count(c)) continue;
+            std::string name = row.value("hts_kor_isnm", c);
+            if (looksLikeEtf(name)) continue;
+            seen.insert(c);
+            double price = std::stod(row.value("stck_prpr", "0"));
+            result.push_back({c, name, price});
+        }
     }
     return result;
 }
