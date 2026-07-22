@@ -82,26 +82,35 @@ int main() {
     else if (mode == "sim") log("authenticated with KIS API (live quotes, orders fill locally, no real money)");
     else log("authenticated with KIS API");
 
-    // KIS (especially 모의투자) rate-limits to a few calls/sec; space out back-to-back requests.
-    const auto apiPause = std::chrono::milliseconds(300);
-    std::this_thread::sleep_for(apiPause);
+    // KIS (especially 모의투자) rate-limits to roughly 1 call/sec; space out requests generously.
+    const auto apiPause = std::chrono::milliseconds(1100);
 
-    std::string stockName = code;
-    try {
-        stockName = client->getStockName(code);
-    } catch (const std::exception& e) {
-        log(std::string("could not fetch stock name, falling back to code: ") + e.what());
+    // Prefer a name given in config.json -- the KIS quote response doesn't reliably include
+    // one (field varies by account/endpoint), so don't burn an extra API call guessing.
+    std::string stockName = cfg.value("name", "");
+    if (stockName.empty()) {
+        std::this_thread::sleep_for(apiPause);
+        try {
+            stockName = client->getStockName(code);
+        } catch (const std::exception& e) {
+            log(std::string("could not fetch stock name, falling back to code: ") + e.what());
+            stockName = code;
+        }
     }
     std::string label = stockName + "(" + code + ")";
+
+    // Daily closes only change once a trading day -- fetch them once at startup instead of
+    // every poll, so each poll only needs a single getCurrentPrice() call.
+    std::this_thread::sleep_for(apiPause);
+    std::vector<double> baseCloses = client->getDailyCloses(code, longPeriod + 5);
 
     bool holding = cfg.value("start_holding", false);
     double avgBuyPrice = 0.0;
 
     while (true) {
         try {
-            auto closes = client->getDailyCloses(code, longPeriod + 5);
-            std::this_thread::sleep_for(apiPause);
             double current = client->getCurrentPrice(code);
+            auto closes = baseCloses;
             closes.push_back(current); // treat live price as "today's" close for signal purposes
 
             Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
