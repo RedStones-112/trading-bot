@@ -30,6 +30,18 @@ static std::string timestamp() {
     return oss.str();
 }
 
+// KRX regular session: weekdays 09:00-15:30, local system clock. Doesn't know about
+// market holidays -- orders on a holiday will still get rejected by KIS itself, just
+// after wasting a scan's worth of API calls first.
+static bool isMarketOpen() {
+    std::time_t t = std::time(nullptr);
+    std::tm tmBuf;
+    localtime_s(&tmBuf, &t);
+    if (tmBuf.tm_wday == 0 || tmBuf.tm_wday == 6) return false; // 일/토
+    int minutes = tmBuf.tm_hour * 60 + tmBuf.tm_min;
+    return minutes >= 9 * 60 && minutes <= 15 * 60 + 30;
+}
+
 static void log(const std::string& msg) {
     std::string line = "[" + timestamp() + "] " + msg;
     std::cout << line << std::endl;
@@ -124,6 +136,11 @@ int main() {
     }
 
     int watchlistSize = cfg.value("watchlist_size", 5);
+    // Only the top `deep_scan_limit` candidates by 전일대비율(dayChangePct, free from the
+    // ranking call) get the expensive per-candidate daily-close fetch; a golden cross is
+    // far more likely on a stock already trending up today. Defaults to watchlistSize
+    // (no behavior change) -- lower it to speed up scans over large watchlists.
+    int deepScanLimit = cfg.value("deep_scan_limit", watchlistSize);
     int qty = cfg.value("qty", 1);
     int shortPeriod = cfg.value("sma_short", 5);
     int longPeriod = cfg.value("sma_long", 20);
@@ -161,8 +178,19 @@ int main() {
     std::atomic<bool> stopStatusWriter{false};
     std::thread statusThread(statusWriterLoop, &shared, &stopStatusWriter);
 
+    // Only paper/live actually submit orders to KIS, which rejects everything outside
+    // regular hours ("모의투자 장종료 입니다") -- gate on it so a closed market doesn't
+    // burn a full scan's worth of API calls (and pacing time) on a guaranteed rejection.
+    bool needsMarketHours = (mode == "paper" || mode == "live");
+
     while (true) {
         try {
+            if (needsMarketHours && !isMarketOpen()) {
+                log("정규장 시간(평일 09:00~15:30) 외 -- 스캔 건너뜀");
+                std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
+                continue;
+            }
+
             bool holding;
             { std::lock_guard<std::mutex> lock(shared.mtx); holding = shared.pos.holding; }
 
@@ -174,6 +202,18 @@ int main() {
                     log("참고: " + std::to_string(candidates.size()) + "개만 확보됨 (KIS 거래량순위 API는 세그먼트당 "
                         "최대 약 30개까지만 주고, 3개 세그먼트를 합쳐도 최대 약 90개 -- 거기서 레버리지/인버스 "
                         "ETF·ETN을 필터링으로 뺀 나머지만 후보가 됨. watchlist_size를 더 키워도 이 이상은 못 늘어남)");
+                }
+
+                // Cheap pre-filter using data the ranking call already gave us for free:
+                // only the top `deepScanLimit` by today's % change get the expensive
+                // per-candidate daily-close fetch (a golden cross is far more likely on a
+                // stock already trending up today than one that's flat or down).
+                if ((int)candidates.size() > deepScanLimit) {
+                    std::sort(candidates.begin(), candidates.end(),
+                              [](const StockInfo& a, const StockInfo& b) { return a.dayChangePct > b.dayChangePct; });
+                    log("전일대비율 기준 상위 " + std::to_string(deepScanLimit) + "개만 정밀 분석 (" +
+                        std::to_string(candidates.size() - deepScanLimit) + "개 스킵)");
+                    candidates.resize(deepScanLimit);
                 }
 
                 // mock mode stays fully offline -- no real HTTP calls, including news.

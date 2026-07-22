@@ -6,6 +6,7 @@
   "cano": "12345678",
   "acnt_prdt_cd": "01",
   "watchlist_size": 5,
+  "deep_scan_limit": 5,
   "qty": 1,
   "sma_short": 5,
   "sma_long": 20,

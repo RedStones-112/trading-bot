@@ -130,7 +130,8 @@ std::vector<StockInfo> KisClient::getTopVolumeStocks(int count) {
             if (looksLikeEtf(name)) continue;
             seen.insert(c);
             double price = std::stod(row.value("stck_prpr", "0"));
-            result.push_back({c, name, price});
+            double dayChangePct = std::stod(row.value("prdy_ctrt", "0"));
+            result.push_back({c, name, price, dayChangePct});
         }
     }
     return result;

@@ -6,6 +6,7 @@ struct StockInfo {
     std::string code;
     std::string name;
     double price; // current price, as reported by the ranking query itself
+    double dayChangePct = 0.0; // 전일대비율, also free from the ranking query -- used as a cheap pre-filter
 };
 
 // Common interface so main.cpp can run against a real broker (KisClient) or a
