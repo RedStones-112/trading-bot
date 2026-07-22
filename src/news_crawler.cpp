@@ -1,5 +1,7 @@
 #include "news_crawler.hpp"
 #include "http_client.hpp"
+#include <iomanip>
+#include <sstream>
 
 namespace {
 
@@ -36,6 +38,37 @@ std::string extractTag(const std::string& block, const std::string& tag) {
     return content;
 }
 
+// Pulls every <item>...</item> block out of an RSS body into title/description pairs.
+std::vector<NewsItem> extractItems(const std::string& body) {
+    std::vector<NewsItem> result;
+    size_t pos = 0;
+    while (true) {
+        size_t start = body.find("<item", pos);
+        if (start == std::string::npos) break;
+        size_t end = body.find("</item>", start);
+        if (end == std::string::npos) break;
+        std::string block = body.substr(start, end - start);
+
+        NewsItem item;
+        item.title = extractTag(block, "title");
+        item.description = extractTag(block, "description");
+        if (!item.title.empty()) result.push_back(std::move(item));
+
+        pos = end + 7;
+    }
+    return result;
+}
+
+std::string urlEncode(const std::string& s) {
+    std::ostringstream oss;
+    oss << std::hex << std::uppercase << std::setfill('0');
+    for (unsigned char c : s) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') oss << c;
+        else oss << '%' << std::setw(2) << (int)c;
+    }
+    return oss.str();
+}
+
 } // namespace
 
 NewsCrawler::NewsCrawler(std::vector<std::string> feedUrls) : feedUrls_(std::move(feedUrls)) {}
@@ -48,27 +81,24 @@ std::vector<NewsItem> NewsCrawler::fetchHeadlines() const {
             splitUrl(url, host, path);
             auto resp = http::request(host, 443, path, "GET", "", "");
             if (resp.status != 200) continue;
-
-            size_t pos = 0;
-            while (true) {
-                size_t start = resp.body.find("<item", pos);
-                if (start == std::string::npos) break;
-                size_t end = resp.body.find("</item>", start);
-                if (end == std::string::npos) break;
-                std::string block = resp.body.substr(start, end - start);
-
-                NewsItem item;
-                item.title = extractTag(block, "title");
-                item.description = extractTag(block, "description");
-                if (!item.title.empty()) result.push_back(std::move(item));
-
-                pos = end + 7;
-            }
+            auto items = extractItems(resp.body);
+            result.insert(result.end(), items.begin(), items.end());
         } catch (...) {
             // best-effort: one bad feed shouldn't sink the whole crawl
         }
     }
     return result;
+}
+
+std::vector<NewsItem> NewsCrawler::searchHeadlines(const std::string& keyword) {
+    try {
+        std::string path = "/rss/search?q=" + urlEncode(keyword) + "&hl=ko&gl=KR&ceid=KR:ko";
+        auto resp = http::request(L"news.google.com", 443, std::wstring(path.begin(), path.end()), "GET", "", "");
+        if (resp.status != 200) return {};
+        return extractItems(resp.body);
+    } catch (...) {
+        return {};
+    }
 }
 
 double NewsCrawler::scoreSentiment(const std::vector<NewsItem>& news, const std::string& stockName) {

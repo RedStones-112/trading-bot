@@ -13,6 +13,7 @@
   "fee_rate": 0.00015,
   "tax_rate": 0.0018,
   "take_profit_pct": 0.02,
+  "bad_news_sentiment_threshold": -2.0,
   "news_feeds": [
     "https://www.mk.co.kr/rss/50200011/",
     "https://www.hankyung.com/feed/economy",

@@ -131,6 +131,7 @@ int main() {
     double feeRate = cfg.value("fee_rate", 0.00015);       // 매매수수료, 매수/매도 양쪽 -- 실제 요율은 증권사/상품에 따라 다름, 확인 필요
     double taxRate = cfg.value("tax_rate", 0.0018);        // 증권거래세, 매도 시에만 -- 시장/시기에 따라 바뀌므로 확인 필요
     double takeProfitPct = cfg.value("take_profit_pct", 0.02); // 수수료/세금 차감 후 이 이상 순이익이면 매도
+    double badNewsThreshold = cfg.value("bad_news_sentiment_threshold", -2.0); // 보유 종목 뉴스감성이 이 이하면 즉시 매도
     std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
         "https://www.mk.co.kr/rss/50200011/",
         "https://www.hankyung.com/feed/economy",
@@ -194,14 +195,15 @@ int main() {
 
                         Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
                         double sentiment = NewsCrawler::scoreSentiment(headlines, c.name);
-                        log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig) +
-                            " 뉴스감성=" + std::to_string(sentiment));
 
                         if (sig == Signal::Buy) {
                             // 기댓값 = 얻을 이득 x 얻을 확률. 이득은 익절 목표치, 확률은 뉴스 감성에서 추정.
+                            // 이 스캔에서 BUY 시그널이 여러 개 떠도 기댓값이 가장 높은 종목 하나만 매수함.
                             double probability = probabilityFromSentiment(sentiment);
                             double gain = c.price * takeProfitPct;
                             double ev = gain * probability;
+                            log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig) +
+                                " 뉴스감성=" + std::to_string(sentiment) + " 기댓값=" + std::to_string(ev));
                             if (ev > bestEv) {
                                 bestEv = ev;
                                 bestCode = c.code;
@@ -209,6 +211,9 @@ int main() {
                                 bestCurrent = c.price;
                                 bestCloses = closes;
                             }
+                        } else {
+                            log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig) +
+                                " 뉴스감성=" + std::to_string(sentiment));
                         }
                     } catch (const std::exception& e) {
                         log("  " + label + " 조회 실패: " + e.what());
@@ -251,18 +256,31 @@ int main() {
                 Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
                 double pnl = (current - avgBuyPrice) * posQty;
                 double netPct = netProfitPct(avgBuyPrice, current, feeRate, taxRate);
+
+                // Held stock might fall out of the scan's watchlist entirely (it's ranked
+                // by volume, not by "do we own it") -- so don't rely on the scan's news pool
+                // for it. Search by name directly instead, every poll, regardless of rank.
+                double newsSentiment = 0.0;
+                if (mode != "mock") {
+                    auto heldNews = NewsCrawler::searchHeadlines(name);
+                    newsSentiment = NewsCrawler::scoreSentiment(heldNews, name);
+                }
+                bool badNews = mode != "mock" && newsSentiment <= badNewsThreshold;
+
                 log(label + " 현재가=" + krw(current) + " 시그널=" + signalStr(sig) + " 보유=" +
                     std::to_string(posQty) + "주, 평단가 " + krw(avgBuyPrice) + ", 평가손익 " + krw(pnl) +
-                    ", 순손익률 " + std::to_string(netPct * 100) + "%");
+                    ", 순손익률 " + std::to_string(netPct * 100) + "%" +
+                    (mode != "mock" ? ", 뉴스감성 " + std::to_string(newsSentiment) : ""));
 
                 { std::lock_guard<std::mutex> lock(shared.mtx); shared.pos.lastKnownPrice = current; }
 
                 bool takeProfitHit = netPct >= takeProfitPct;
-                if (sig == Signal::Sell || takeProfitHit) {
+                if (sig == Signal::Sell || takeProfitHit || badNews) {
                     auto odno = client->placeMarketOrder(code, IBroker::Side::Sell, posQty);
                     double netProfit = netPct * avgBuyPrice * posQty;
+                    std::string reason = badNews ? "악재" : takeProfitHit ? "익절" : "데드크로스";
                     log("<<< 매도 체결: " + label + " " + std::to_string(posQty) + "주 @ " + krw(current) +
-                        " (주문번호 " + odno + ", 사유 " + (takeProfitHit ? "익절" : "데드크로스") +
+                        " (주문번호 " + odno + ", 사유 " + reason +
                         "), 수수료/세금 차감 순손익 " + krw(netProfit));
                     logTrade("SELL", code, name, posQty, current, feeRate, taxRate, netProfit);
                     { std::lock_guard<std::mutex> lock(shared.mtx); shared.pos = Position{}; }
