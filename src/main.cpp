@@ -12,6 +12,8 @@
 #include <iomanip>
 #include <memory>
 #include <sstream>
+#include <cmath>
+#include <windows.h>
 
 using json = nlohmann::json;
 
@@ -31,7 +33,13 @@ static void log(const std::string& msg) {
     f << line << "\n";
 }
 
+static std::string krw(double v) {
+    return std::to_string((long long)std::llround(v)) + "원";
+}
+
 int main() {
+    SetConsoleOutputCP(CP_UTF8); // source strings are UTF-8; console defaults to the system codepage otherwise
+
     std::ifstream cfgFile("config.json");
     if (!cfgFile) {
         std::cerr << "config.json not found. Copy config.example.json and fill in your credentials.\n";
@@ -74,27 +82,50 @@ int main() {
     else if (mode == "sim") log("authenticated with KIS API (live quotes, orders fill locally, no real money)");
     else log("authenticated with KIS API");
 
+    // KIS (especially 모의투자) rate-limits to a few calls/sec; space out back-to-back requests.
+    const auto apiPause = std::chrono::milliseconds(300);
+    std::this_thread::sleep_for(apiPause);
+
+    std::string stockName = code;
+    try {
+        stockName = client->getStockName(code);
+    } catch (const std::exception& e) {
+        log(std::string("could not fetch stock name, falling back to code: ") + e.what());
+    }
+    std::string label = stockName + "(" + code + ")";
+
     bool holding = cfg.value("start_holding", false);
+    double avgBuyPrice = 0.0;
 
     while (true) {
         try {
             auto closes = client->getDailyCloses(code, longPeriod + 5);
+            std::this_thread::sleep_for(apiPause);
             double current = client->getCurrentPrice(code);
             closes.push_back(current); // treat live price as "today's" close for signal purposes
 
             Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
-            log("price=" + std::to_string(current) + " signal=" +
-                (sig == Signal::Buy ? "BUY" : sig == Signal::Sell ? "SELL" : "HOLD") +
-                " holding=" + (holding ? "yes" : "no"));
+            std::string sigStr = sig == Signal::Buy ? "BUY" : sig == Signal::Sell ? "SELL" : "HOLD";
+
+            std::string posStr = holding
+                ? std::to_string(qty) + "주, 평단가 " + krw(avgBuyPrice) +
+                  ", 평가손익 " + krw((current - avgBuyPrice) * qty)
+                : "0주";
+            log(label + " 현재가=" + krw(current) + " 시그널=" + sigStr + " 보유=" + posStr);
 
             if (sig == Signal::Buy && !holding) {
                 auto odno = client->placeMarketOrder(code, IBroker::Side::Buy, qty);
                 holding = true;
-                log("BUY order placed, order_no=" + odno);
+                avgBuyPrice = current;
+                log(">>> 매수 체결: " + label + " " + std::to_string(qty) + "주 @ " + krw(current) +
+                    " (주문번호 " + odno + ")");
             } else if (sig == Signal::Sell && holding) {
                 auto odno = client->placeMarketOrder(code, IBroker::Side::Sell, qty);
+                double pnl = (current - avgBuyPrice) * qty;
+                log("<<< 매도 체결: " + label + " " + std::to_string(qty) + "주 @ " + krw(current) +
+                    " (주문번호 " + odno + "), 손익 " + krw(pnl));
                 holding = false;
-                log("SELL order placed, order_no=" + odno);
+                avgBuyPrice = 0.0;
             }
         } catch (const std::exception& e) {
             log(std::string("ERROR: ") + e.what());

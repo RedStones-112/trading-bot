@@ -10,6 +10,9 @@ public:
 
     virtual void authenticate() = 0;
 
+    // Human-readable name for a 6-digit KRX code (e.g. "005930" -> "삼성전자").
+    virtual std::string getStockName(const std::string& code) = 0;
+
     // Latest traded price for a 6-digit KRX code (e.g. "005930" = Samsung Electronics).
     virtual double getCurrentPrice(const std::string& code) = 0;
 

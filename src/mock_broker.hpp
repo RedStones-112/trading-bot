@@ -13,6 +13,7 @@ public:
 
     void authenticate() override {} // nothing to do
 
+    std::string getStockName(const std::string&) override { return "가상종목"; }
     double getCurrentPrice(const std::string& code) override;
     std::vector<double> getDailyCloses(const std::string& code, int count) override;
     std::string placeMarketOrder(const std::string& code, Side side, int qty) override;

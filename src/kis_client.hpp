@@ -15,6 +15,7 @@ public:
 
     void authenticate() override; // fetches OAuth access token, must call before other methods
 
+    std::string getStockName(const std::string& code) override;
     double getCurrentPrice(const std::string& code) override;
 
     std::vector<double> getDailyCloses(const std::string& code, int count) override;

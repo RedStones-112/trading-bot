@@ -80,6 +80,13 @@ double KisClient::getCurrentPrice(const std::string& code) {
     return std::stod(j.at("output").at("stck_prpr").get<std::string>());
 }
 
+std::string KisClient::getStockName(const std::string& code) {
+    std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code;
+    auto body = request("/uapi/domestic-stock/v1/quotations/inquire-price", "GET", "FHKST01010100", query, true);
+    auto j = json::parse(body);
+    return j.at("output").value("hts_kor_isnm", code);
+}
+
 std::vector<double> KisClient::getDailyCloses(const std::string& code, int count) {
     std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code +
                          "&FID_INPUT_DATE_1=" + dateOffset(count * 2 + 10) +
