@@ -10,7 +10,8 @@
 // end to end -- not a real backtest (no historical accuracy, no fees/slippage).
 class MockBroker : public IBroker {
 public:
-    explicit MockBroker(double startPrice = 70000.0, unsigned seed = std::random_device{}());
+    explicit MockBroker(double startPrice = 70000.0, double initialCash = 10000000.0,
+                         unsigned seed = std::random_device{}());
 
     void authenticate() override {} // nothing to do
 
@@ -18,7 +19,12 @@ public:
     std::vector<StockInfo> getTopVolumeStocks(int count) override;
     double getCurrentPrice(const std::string& code) override;
     std::vector<double> getDailyCloses(const std::string& code, int count) override;
-    std::string placeMarketOrder(const std::string& code, Side side, int qty) override;
+    double getBuyableCash() override { return cash_; }
+    std::vector<HeldStock> getHoldings() override { return {}; }
+    std::vector<PendingOrder> getPendingOrders() override { return {}; }
+    void cancelOrder(const std::string&) override {}
+    std::string placeMarketOrder(const std::string& code, Side side, int qty,
+                                  double feeRate, double taxRate) override;
 
 private:
     struct Series {
@@ -29,6 +35,7 @@ private:
     double advance(Series& s); // one random-walk step, appended to history
 
     double startPrice_;
+    double cash_;
     std::map<std::string, Series> series_;
     std::mt19937 rng_;
     int orderSeq_ = 0;

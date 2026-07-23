@@ -1,5 +1,6 @@
 #include "mock_broker.hpp"
 #include <algorithm>
+#include <stdexcept>
 
 namespace {
 // Fixed pretend universe so mock mode can exercise the scan/pick logic without any API.
@@ -9,7 +10,8 @@ const std::vector<std::pair<std::string, std::string>> kMockUniverse = {
 };
 }
 
-MockBroker::MockBroker(double startPrice, unsigned seed) : startPrice_(startPrice), rng_(seed) {}
+MockBroker::MockBroker(double startPrice, double initialCash, unsigned seed)
+    : startPrice_(startPrice), cash_(initialCash), rng_(seed) {}
 
 MockBroker::Series& MockBroker::seriesFor(const std::string& code) {
     auto it = series_.find(code);
@@ -62,6 +64,16 @@ std::vector<double> MockBroker::getDailyCloses(const std::string& code, int coun
     return std::vector<double>(history.end() - take, history.end());
 }
 
-std::string MockBroker::placeMarketOrder(const std::string&, Side, int) {
+std::string MockBroker::placeMarketOrder(const std::string& code, Side side, int qty,
+                                          double feeRate, double taxRate) {
+    double price = seriesFor(code).lastPrice;
+    if (side == Side::Buy) {
+        double cost = qty * price * (1 + feeRate);
+        if (cost > cash_) throw std::runtime_error("insufficient cash: need " + std::to_string(cost) +
+                                                     ", have " + std::to_string(cash_));
+        cash_ -= cost;
+    } else {
+        cash_ += qty * price * (1 - feeRate - taxRate);
+    }
     return "MOCK" + std::to_string(++orderSeq_);
 }

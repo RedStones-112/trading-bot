@@ -21,7 +21,13 @@ public:
 
     std::vector<double> getDailyCloses(const std::string& code, int count) override;
 
-    std::string placeMarketOrder(const std::string& code, Side side, int qty) override;
+    double getBuyableCash() override;
+    std::vector<HeldStock> getHoldings() override;
+    std::vector<PendingOrder> getPendingOrders() override;
+    void cancelOrder(const std::string& odno) override;
+
+    std::string placeMarketOrder(const std::string& code, Side side, int qty,
+                                  double feeRate, double taxRate) override;
 
 private:
     std::string request(const std::string& path, const std::string& method,

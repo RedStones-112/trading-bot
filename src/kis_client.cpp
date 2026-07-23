@@ -158,7 +158,91 @@ std::vector<double> KisClient::getDailyCloses(const std::string& code, int count
     return closes;
 }
 
-std::string KisClient::placeMarketOrder(const std::string& code, Side side, int qty) {
+double KisClient::getBuyableCash() {
+    // 매수가능조회 -- ord_psbl_cash is account-wide buyable cash, not gated by PDNO's
+    // price (PDNO is required by the endpoint but doesn't restrict the returned amount).
+    // Field name is a best guess from docs; verify against a live paper-account call.
+    std::string trId = paper_ ? "VTTC8908R" : "TTTC8908R";
+    std::string query = "CANO=" + cano_ + "&ACNT_PRDT_CD=" + acntPrdtCd_ +
+                         "&PDNO=005930&ORD_UNPR=0&ORD_DVSN=01"
+                         "&CMA_EVLU_AMT_ICLD_YN=N&OVRS_ICLD_YN=N";
+    auto body = request("/uapi/domestic-stock/v1/trading/inquire-psbl-order", "GET", trId, query, true);
+    auto j = json::parse(body);
+    return std::stod(j.at("output").value("ord_psbl_cash", "0"));
+}
+
+std::vector<HeldStock> KisClient::getHoldings() {
+    // 잔고조회 -- lists everything currently held in the account, independent of
+    // whatever this process remembers locally. Used at startup to recover positions
+    // bought in a previous run. Field names are a best guess from docs; verify against
+    // a live paper-account call. Not paginated (CTX_AREA_*100 left blank) -- fine for
+    // this bot's small position counts, but a very large account could be truncated.
+    std::string trId = paper_ ? "VTTC8434R" : "TTTC8434R";
+    std::string query = "CANO=" + cano_ + "&ACNT_PRDT_CD=" + acntPrdtCd_ +
+                         "&AFHR_FLPR_YN=N&OFL_YN=&INQR_DVSN=02&UNPR_DVSN=01"
+                         "&FUND_STTL_ICLD_YN=N&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00"
+                         "&CTX_AREA_FK100=&CTX_AREA_NK100=";
+    auto body = request("/uapi/domestic-stock/v1/trading/inquire-balance", "GET", trId, query, true);
+    auto j = json::parse(body);
+
+    std::vector<HeldStock> result;
+    for (auto& row : j.at("output1")) {
+        int qty = std::stoi(row.value("hldg_qty", "0"));
+        if (qty <= 0) continue; // KIS keeps zero-qty rows for stocks fully sold earlier
+        result.push_back({row.value("pdno", ""), row.value("prdt_name", ""), qty,
+                           std::stod(row.value("pchs_avg_pric", "0"))});
+    }
+    return result;
+}
+
+std::vector<PendingOrder> KisClient::getPendingOrders() {
+    if (paper_) {
+        // Confirmed via a live call: KIS 모의투자 rejects this *listing* outright
+        // ("모의투자에서는 해당업무가 제공되지 않습니다", rt_cd=1) -- but cancelOrder()
+        // below (a different endpoint) works fine on paper accounts. Paper just has no
+        // API-level way to *discover* what's pending; cancelling a known order id is fine.
+        return {};
+    }
+    std::string query = "CANO=" + cano_ + "&ACNT_PRDT_CD=" + acntPrdtCd_ +
+                         "&CTX_AREA_FK100=&CTX_AREA_NK100=&INQR_DVSN_1=0&INQR_DVSN_2=0";
+    auto body = request("/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl", "GET", "TTTC8036R", query, true);
+    auto j = json::parse(body);
+    if (j.value("rt_cd", "1") != "0")
+        throw std::runtime_error("pending-order query rejected: " + j.value("msg1", body));
+
+    std::vector<PendingOrder> result;
+    for (auto& row : j.at("output")) {
+        int qty = std::stoi(row.value("psbl_qty", "0"));
+        if (qty <= 0) continue; // nothing left to cancel on this order
+        result.push_back({row.value("odno", ""), row.value("pdno", ""),
+                           row.value("prdt_name", row.value("pdno", "")), qty});
+    }
+    return result;
+}
+
+void KisClient::cancelOrder(const std::string& odno) {
+    // KRX_FWDG_ORD_ORGNO left blank and ORD_QTY=0 + QTY_ALL_ORD_YN=Y (cancel whatever
+    // quantity is still unfilled, regardless of amount) confirmed working live on a paper
+    // account -- no need for the blocked listing endpoint's per-order detail at all.
+    std::string trId = paper_ ? "VTTC0803U" : "TTTC0803U";
+    json body = {
+        {"CANO", cano_}, {"ACNT_PRDT_CD", acntPrdtCd_},
+        {"KRX_FWDG_ORD_ORGNO", ""},
+        {"ORGN_ODNO", odno},
+        {"ORD_DVSN", "01"}, // this bot only ever places market (01) orders
+        {"RVSE_CNCL_DVSN_CD", "02"}, // 02 = 취소
+        {"ORD_QTY", "0"},
+        {"ORD_UNPR", "0"},
+        {"QTY_ALL_ORD_YN", "Y"}
+    };
+    auto respBody = request("/uapi/domestic-stock/v1/trading/order-rvsecncl", "POST", trId, body.dump(), false);
+    auto j = json::parse(respBody);
+    if (j.at("rt_cd").get<std::string>() != "0")
+        throw std::runtime_error("cancel rejected: " + j.value("msg1", respBody));
+}
+
+std::string KisClient::placeMarketOrder(const std::string& code, Side side, int qty,
+                                         double /*feeRate*/, double /*taxRate*/) {
     std::string trId = paper_ ? (side == Side::Buy ? "VTTC0802U" : "VTTC0801U")
                                : (side == Side::Buy ? "TTTC0802U" : "TTTC0801U");
     json body = {

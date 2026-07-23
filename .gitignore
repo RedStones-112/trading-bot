@@ -3,4 +3,5 @@ trading.log
 trades.log
 holdings.txt
 sim_fills.log
+pending_orders.txt
 build/

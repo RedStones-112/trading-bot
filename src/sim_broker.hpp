@@ -8,16 +8,22 @@
 // paper-trading account setup.
 class SimBroker : public IBroker {
 public:
-    SimBroker(std::string appkey, std::string appsecret);
+    SimBroker(std::string appkey, std::string appsecret, double initialCash = 10000000.0);
 
     void authenticate() override { kis_.authenticate(); }
     std::string getStockName(const std::string& code) override { return kis_.getStockName(code); }
     std::vector<StockInfo> getTopVolumeStocks(int count) override { return kis_.getTopVolumeStocks(count); }
     double getCurrentPrice(const std::string& code) override { return kis_.getCurrentPrice(code); }
     std::vector<double> getDailyCloses(const std::string& code, int count) override { return kis_.getDailyCloses(code, count); }
-    std::string placeMarketOrder(const std::string& code, Side side, int qty) override;
+    double getBuyableCash() override { return cash_; }
+    std::vector<HeldStock> getHoldings() override { return {}; }
+    std::vector<PendingOrder> getPendingOrders() override { return {}; }
+    void cancelOrder(const std::string&) override {}
+    std::string placeMarketOrder(const std::string& code, Side side, int qty,
+                                  double feeRate, double taxRate) override;
 
 private:
     KisClient kis_; // live host, quotes only -- kis_.placeMarketOrder() is never called
+    double cash_;
     int orderSeq_ = 0;
 };

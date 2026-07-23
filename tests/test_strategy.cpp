@@ -30,13 +30,24 @@ int main() {
     assert(threw);
 
     // MockBroker: never touches the network, returns sane values.
-    MockBroker broker(70000.0, /*seed=*/42);
+    MockBroker broker(70000.0, /*initialCash=*/10000000.0, /*seed=*/42);
     double price = broker.getCurrentPrice("005930");
     assert(price > 0);
     auto history = broker.getDailyCloses("005930", 10);
     assert(history.size() == 10);
-    auto orderId = broker.placeMarketOrder("005930", IBroker::Side::Buy, 1);
+    assert(broker.getBuyableCash() == 10000000.0);
+    auto orderId = broker.placeMarketOrder("005930", IBroker::Side::Buy, 1, 0.00015, 0.0018);
     assert(!orderId.empty());
+    // Cash debited by the buy: price*(1+feeRate).
+    assert(broker.getBuyableCash() < 10000000.0);
+    // Buying more than affordable should throw rather than silently over-spend.
+    bool insufficientThrew = false;
+    try {
+        broker.placeMarketOrder("005930", IBroker::Side::Buy, 1000000, 0.00015, 0.0018);
+    } catch (const std::exception&) {
+        insufficientThrew = true;
+    }
+    assert(insufficientThrew);
 
     // netProfitPct: buy 10000, sell 10500 with 0.015% fee + 0.18% tax should still be a net gain,
     // and matches a plain hand-computed value.

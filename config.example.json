@@ -1,20 +1,57 @@
 {
+  // mock: 오프라인 가상 종목/랜덤워크 (기본, 아무 준비 없이 바로 실행 가능)
+  // sim : KIS 실계좌 앱키로 실시간 시세, 주문은 로컬 가상 체결 (모의투자 신청 불필요)
+  // paper: KIS 모의투자 서버 (모의투자 신청 필요)
+  // live: KIS 실서버, 진짜 돈. 충분히 검증 후에만 전환할 것
   "mode": "mock",
+
+  // mock 모드 전용 -- 가상 종목 시작가
   "mock_start_price": 70000.0,
+  // mock/sim 전용 가상 현금 시드값. paper/live는 실제 KIS 잔고를 조회하므로 무시됨
+  "initial_cash": 10000000.0,
+
+  // sim/paper/live에 필요한 KIS Developers 앱키/시크릿
   "appkey": "YOUR_APP_KEY",
   "appsecret": "YOUR_APP_SECRET",
+  // paper/live 전용 계좌번호 (앞 8자리/뒤 2자리)
   "cano": "12345678",
   "acnt_prdt_cd": "01",
+
+  // 매 스캔마다 볼 후보 종목 수 (거래량순위 기준)
   "watchlist_size": 5,
+  // 그중 일봉 히스토리까지 정밀 분석할 상위 종목 수 (전일대비율 기준, watchlist_size 이하로)
   "deep_scan_limit": 5,
-  "qty": 1,
+
+  // 동시 보유 가능한 최대 종목 수. 늘리면 분산되지만 poll 사이클마다 종목별 시세+뉴스
+  // 조회가 추가돼 한 사이클이 길어짐
+  "max_positions": 3,
+  // 매수/추가매수 1회당 그 시점 매수가능금액 중 쓸 비율 (한 번에 계좌 전체를 한
+  // 종목에 쏟아붓지 않도록)
+  "position_cash_fraction": 0.3,
+  // 한 종목에 허용하는 최대 추가매수 횟수 (최초 매수는 제외)
+  "max_topups_per_symbol": 3,
+  // 한 종목의 총 투입액(원가 기준)이 전체 계좌 가치에서 차지할 수 있는 최대 비율
+  "max_position_value_fraction": 0.5,
+  // paper/live에서 주문 후 실제 체결(잔고 반영)을 확인하는 최대 대기 시간(초),
+  // 2초 간격으로 폴링. 이 안에 안 채워지면 미체결로 보고 취소함
+  "fill_confirm_timeout_seconds": 10,
+
+  // SMA 골든/데드크로스에 쓰는 단기/장기 이동평균 기간(일)
   "sma_short": 5,
   "sma_long": 20,
+  // 메인 루프 반복 주기(초) -- 실제 스캔은 이보다 훨씬 오래 걸릴 수 있음(레이트리밋 때문)
   "poll_seconds": 5,
+
+  // 매매수수료 (매수/매도 양쪽) -- 실제 요율은 증권사/상품에 따라 다르니 확인 필요
   "fee_rate": 0.00015,
+  // 증권거래세 (매도 시) -- 시장/시기에 따라 바뀌므로 확인 필요
   "tax_rate": 0.0018,
+  // 수수료/세금 차감 후 이 이상 순손익률이면 익절 매도
   "take_profit_pct": 0.02,
+  // 보유 종목 뉴스감성이 이 이하면 악재로 보고 즉시 매도
   "bad_news_sentiment_threshold": -2.0,
+
+  // 스캔용 후보 스크리닝에 쓸 RSS 피드 URL 목록
   "news_feeds": [
     "https://www.mk.co.kr/rss/50200011/",
     "https://www.hankyung.com/feed/economy",
