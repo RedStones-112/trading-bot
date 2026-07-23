@@ -58,6 +58,25 @@ static void logTrade(const std::string& side, const std::string& code, const std
       << price << "," << feeRate << "," << taxRate << "," << netProfit << "\n";
 }
 
+// Reconstructs today's cumulative realized P&L from trades.log so the daily loss limit
+// survives a restart within the same calendar day (no separate persistence needed --
+// trades.log already has everything, one row per completed trade).
+static double loadTodaysRealizedPnl(const std::string& today) {
+    std::ifstream in("trades.log");
+    std::string line;
+    double sum = 0.0;
+    while (std::getline(in, line)) {
+        if (line.size() < 10 || line.substr(0, 10) != today) continue;
+        std::stringstream ss(line);
+        std::vector<std::string> fields;
+        std::string field;
+        while (std::getline(ss, field, ',')) fields.push_back(field);
+        if (fields.size() < 9 || fields[1] != "SELL") continue;
+        try { sum += std::stod(fields[8]); } catch (const std::exception&) {}
+    }
+    return sum;
+}
+
 // Local record of order ids that have been placed (paper/live) but not yet confirmed
 // resolved (filled, or its unfilled remainder cancelled). KIS's own "list pending orders"
 // endpoint doesn't work on paper accounts (confirmed live), so this is the only way to
@@ -218,7 +237,18 @@ int main() {
     double feeRate = cfg.value("fee_rate", 0.00015);       // 매매수수료, 매수/매도 양쪽 -- 실제 요율은 증권사/상품에 따라 다름, 확인 필요
     double taxRate = cfg.value("tax_rate", 0.0018);        // 증권거래세, 매도 시에만 -- 시장/시기에 따라 바뀌므로 확인 필요
     double takeProfitPct = cfg.value("take_profit_pct", 0.02); // 수수료/세금 차감 후 이 이상 순이익이면 매도
+    double stopLossPct = cfg.value("stop_loss_pct", 0.03); // 수수료/세금 차감 후 이 이상 손실이면 즉시 매도
     double badNewsThreshold = cfg.value("bad_news_sentiment_threshold", -2.0); // 보유 종목 뉴스감성이 이 이하면 즉시 매도
+    // 고정비율 리스크 모델(fixed-fractional risk model) -- 매수 수량을 "이 트레이드가
+    // stop_loss_pct에서 손절되면 총자산의 이 비율만큼만 잃는다"는 조건으로 역산함.
+    // position_cash_fraction/max_position_value_fraction은 그 위에 안전판으로 계속 적용됨
+    // (risk_per_trade_pct로 계산한 수량이 더 크면 그쪽으로 잘림).
+    double riskPerTradePct = cfg.value("risk_per_trade_pct", 0.01);
+    // 오늘 누적 실현손익(매도 체결분 합)이 총자산의 이 비율 이하로 내려가면 그날은 신규
+    // 매수/추가매수/교체매도를 전부 멈춤 -- 보유 종목 모니터링/매도는 계속함(손절/익절은
+    // 계속 작동, 새 리스크만 안 늚). trades.log에서 오늘 날짜분을 합산해 복원되므로
+    // 재시작해도 같은 날이면 한도 계산이 끊기지 않음.
+    double dailyLossLimitPct = cfg.value("daily_loss_limit_pct", 0.05);
     std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
         "https://www.mk.co.kr/rss/50200011/",
         "https://www.hankyung.com/feed/economy",
@@ -251,6 +281,21 @@ int main() {
     // KIS (especially 모의투자) rate-limits to roughly 1 call/sec; space out requests generously.
     // Mock mode is local computation, not a real API, so there's nothing to pace.
     const auto apiPause = std::chrono::milliseconds(mode == "mock" ? 0 : 1100);
+
+    // Daily loss circuit breaker state -- restored from trades.log so a restart on the
+    // same calendar day doesn't reset the counter and let more risk back in.
+    std::string todayDate = timestamp().substr(0, 10);
+    double todayRealizedPnl = loadTodaysRealizedPnl(todayDate);
+    if (todayRealizedPnl != 0.0)
+        log("오늘(" + todayDate + ") 누적 실현손익 복원: " + krw(todayRealizedPnl));
+    auto rolloverIfNewDay = [&]() {
+        std::string nowDate = timestamp().substr(0, 10);
+        if (nowDate != todayDate) {
+            todayDate = nowDate;
+            todayRealizedPnl = 0.0;
+            log("날짜 변경 감지 (" + todayDate + ") -- 일일 손실 한도 카운터 초기화");
+        }
+    };
 
     SharedState shared;
 
@@ -426,6 +471,7 @@ int main() {
             " (주문번호 " + odno + ", 사유 " + reason + ")" + fillNote +
             ", 수수료/세금 차감 순손익 " + krw(netProfit));
         logTrade("SELL", p.code, p.name, soldQty, current, feeRate, taxRate, netProfit);
+        todayRealizedPnl += netProfit;
 
         std::lock_guard<std::mutex> lock(shared.mtx);
         if (soldQty >= p.qty) {
@@ -438,6 +484,8 @@ int main() {
 
     while (true) {
         try {
+            rolloverIfNewDay();
+
             if (needsMarketHours && !isMarketOpen()) {
                 log("정규장 시간(평일 09:00~15:30) 외 -- 스캔 건너뜀");
                 std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
@@ -485,8 +533,9 @@ int main() {
                       if (it != shared.positions.end()) it->second.lastKnownPrice = current; }
 
                     bool takeProfitHit = netPct >= takeProfitPct;
-                    if (sig == Signal::Sell || takeProfitHit || badNews) {
-                        std::string reason = badNews ? "악재" : takeProfitHit ? "익절" : "데드크로스";
+                    bool stopLossHit = netPct <= -stopLossPct;
+                    if (sig == Signal::Sell || takeProfitHit || stopLossHit || badNews) {
+                        std::string reason = badNews ? "악재" : takeProfitHit ? "익절" : stopLossHit ? "손절" : "데드크로스";
                         sellPosition(p, current, reason);
                     } else {
                         double probability = probabilityFromSentiment(newsSentiment);
@@ -496,6 +545,25 @@ int main() {
                 } catch (const std::exception& e) {
                     log(label + " 모니터링 실패: " + e.what());
                 }
+            }
+
+            // Daily loss circuit breaker: if today's cumulative realized P&L has already
+            // breached the limit, skip Phase B entirely (including the expensive scan) --
+            // no new risk today, but Phase A above still runs every poll so existing
+            // positions keep getting monitored/sold normally (take-profit/stop-loss/dead
+            // cross/bad-news all still fire).
+            double buyableCash = client->getBuyableCash();
+            std::this_thread::sleep_for(apiPause);
+            double otherValue = 0.0;
+            { std::lock_guard<std::mutex> lock(shared.mtx);
+              for (auto& [code, p] : shared.positions) otherValue += p.qty * p.lastKnownPrice; }
+            double totalEquity = buyableCash + otherValue;
+
+            if (todayRealizedPnl <= -dailyLossLimitPct * totalEquity) {
+                log("일일 손실 한도 도달 (오늘 실현손익 " + krw(todayRealizedPnl) + ", 한도 -" +
+                    krw(dailyLossLimitPct * totalEquity) + ") -- 오늘은 신규 매수 중단, 모니터링/매도만 계속");
+                std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
+                continue;
             }
 
             // Phase B: scan for this cycle's single best opportunity and act on it -- top up
@@ -571,8 +639,8 @@ int main() {
             if (buyCandidates.empty()) {
                 log("매수 신호를 보이는 종목 없음, 다음 스캔까지 대기");
             } else {
-                double buyableCash = client->getBuyableCash();
-                std::this_thread::sleep_for(apiPause);
+                // `buyableCash` was already fetched above for the daily-loss-limit check --
+                // reused here (refreshed only if this cycle ends up evicting a position).
                 bool evictedThisCycle = false; // at most one eviction per cycle, however many candidates we walk through
                 bool acted = false;
 
@@ -644,11 +712,19 @@ int main() {
                       if (existed) existing = it->second; }
 
                     double unitCost = cand.current * (1 + feeRate);
-                    // Spend at most `positionCashFraction` of whatever cash is available
-                    // right now -- keeps one trade from spending the whole account and
-                    // leaves room for later top-ups/diversification (never buy just 1
-                    // share by default, but still fall back to 1 if that's all that fits).
-                    int buyQty = (int)std::floor(positionCashFraction * buyableCash / unitCost);
+                    double totalEquity = buyableCash + otherValue;
+
+                    // 고정비율 리스크 모델(fixed-fractional risk model): 이 트레이드가
+                    // stop_loss_pct에서 손절되면 총자산의 risk_per_trade_pct만 잃도록 수량을
+                    // 역산 -- 변동성/가격이 큰 종목일수록 더 적게 사게 됨. position_cash_fraction
+                    // 은 그 위에 안전판으로 계속 적용(둘 중 더 작은 쪽으로 결정) -- 손절선이
+                    // 아주 타이트하게 설정된 경우에도 한 트레이드가 계좌를 과도하게 잠식하지
+                    // 않도록.
+                    double riskBudget = totalEquity * riskPerTradePct;
+                    double lossPerShare = cand.current * stopLossPct;
+                    int riskQty = lossPerShare > 0 ? (int)std::floor(riskBudget / lossPerShare) : 0;
+                    int cashFractionQty = (int)std::floor(positionCashFraction * buyableCash / unitCost);
+                    int buyQty = std::min(riskQty, cashFractionQty);
                     if (buyQty < 1 && buyableCash >= unitCost) buyQty = 1;
 
                     if (existed && existing.topUps >= maxTopupsPerSymbol) {
@@ -657,7 +733,6 @@ int main() {
                         continue;
                     }
                     if (buyQty >= 1) {
-                        double totalEquity = buyableCash + otherValue;
                         double currentPositionValue = existed ? existing.avgBuyPrice * existing.qty : 0.0;
                         double room = maxPositionValueFraction * totalEquity - currentPositionValue;
                         int roomQty = room > 0 ? (int)std::floor(room / unitCost) : 0;
