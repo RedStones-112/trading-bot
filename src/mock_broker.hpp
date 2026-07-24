@@ -18,7 +18,8 @@ public:
     std::string getStockName(const std::string& code) override;
     std::vector<StockInfo> getTopVolumeStocks(int count) override;
     double getCurrentPrice(const std::string& code) override;
-    std::vector<double> getDailyCloses(const std::string& code, int count) override;
+    std::vector<DailyBar> getDailyBars(const std::string& code, int count) override;
+    Fundamentals getFundamentals(const std::string& code) override;
     double getBuyableCash() override { return cash_; }
     std::vector<HeldStock> getHoldings() override { return {}; }
     std::vector<PendingOrder> getPendingOrders() override { return {}; }
@@ -28,7 +29,7 @@ public:
 
 private:
     struct Series {
-        std::deque<double> history;
+        std::deque<DailyBar> history; // close/high/low/volume per synthetic "day"
         double lastPrice;
     };
     Series& seriesFor(const std::string& code);

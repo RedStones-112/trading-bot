@@ -19,7 +19,7 @@ public:
     double getCurrentPrice(const std::string& code) override;
     std::vector<StockInfo> getTopVolumeStocks(int count) override;
 
-    std::vector<double> getDailyCloses(const std::string& code, int count) override;
+    std::vector<DailyBar> getDailyBars(const std::string& code, int count) override;
 
     double getBuyableCash() override;
     std::vector<HeldStock> getHoldings() override;
@@ -28,6 +28,8 @@ public:
 
     std::string placeMarketOrder(const std::string& code, Side side, int qty,
                                   double feeRate, double taxRate) override;
+
+    Fundamentals getFundamentals(const std::string& code) override;
 
 private:
     std::string request(const std::string& path, const std::string& method,

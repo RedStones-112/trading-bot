@@ -14,7 +14,8 @@ public:
     std::string getStockName(const std::string& code) override { return kis_.getStockName(code); }
     std::vector<StockInfo> getTopVolumeStocks(int count) override { return kis_.getTopVolumeStocks(count); }
     double getCurrentPrice(const std::string& code) override { return kis_.getCurrentPrice(code); }
-    std::vector<double> getDailyCloses(const std::string& code, int count) override { return kis_.getDailyCloses(code, count); }
+    std::vector<DailyBar> getDailyBars(const std::string& code, int count) override { return kis_.getDailyBars(code, count); }
+    Fundamentals getFundamentals(const std::string& code) override { return kis_.getFundamentals(code); }
     double getBuyableCash() override { return cash_; }
     std::vector<HeldStock> getHoldings() override { return {}; }
     std::vector<PendingOrder> getPendingOrders() override { return {}; }

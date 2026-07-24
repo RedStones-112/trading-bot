@@ -1,7 +1,10 @@
 #include "news_crawler.hpp"
 #include "http_client.hpp"
+#include "../third_party/json.hpp"
 #include <iomanip>
 #include <sstream>
+
+using json = nlohmann::json;
 
 namespace {
 
@@ -69,9 +72,32 @@ std::string urlEncode(const std::string& s) {
     return oss.str();
 }
 
+// Naver's search API bolds matched terms with <b>/</b> and HTML-escapes the rest --
+// strip both so scoreSentiment's plain substring matching works the same as it does on
+// RSS-sourced text.
+std::string stripNaverMarkup(std::string s) {
+    auto replaceAll = [&](const std::string& from, const std::string& to) {
+        size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+    };
+    replaceAll("<b>", "");
+    replaceAll("</b>", "");
+    replaceAll("&quot;", "\"");
+    replaceAll("&amp;", "&");
+    replaceAll("&lt;", "<");
+    replaceAll("&gt;", ">");
+    replaceAll("&#39;", "'");
+    return s;
+}
+
 } // namespace
 
-NewsCrawler::NewsCrawler(std::vector<std::string> feedUrls) : feedUrls_(std::move(feedUrls)) {}
+NewsCrawler::NewsCrawler(std::vector<std::string> feedUrls, std::string naverClientId, std::string naverClientSecret)
+    : feedUrls_(std::move(feedUrls)), naverClientId_(std::move(naverClientId)),
+      naverClientSecret_(std::move(naverClientSecret)) {}
 
 std::vector<NewsItem> NewsCrawler::fetchHeadlines() const {
     std::vector<NewsItem> result;
@@ -97,6 +123,29 @@ std::vector<NewsItem> NewsCrawler::searchHeadlines(const std::string& keyword) {
         if (resp.status != 200) return {};
         return extractItems(resp.body);
     } catch (...) {
+        return {};
+    }
+}
+
+std::vector<NewsItem> NewsCrawler::searchNaverHeadlines(const std::string& keyword) const {
+    if (naverClientId_.empty() || naverClientSecret_.empty()) return {};
+    try {
+        std::string path = "/v1/search/news.json?query=" + urlEncode(keyword) + "&display=100&sort=date";
+        std::string headers = "X-Naver-Client-Id: " + naverClientId_ + "\r\n"
+                               "X-Naver-Client-Secret: " + naverClientSecret_;
+        auto resp = http::request(L"openapi.naver.com", 443, std::wstring(path.begin(), path.end()),
+                                   "GET", headers, "");
+        if (resp.status != 200) return {};
+        auto j = json::parse(resp.body);
+        std::vector<NewsItem> result;
+        for (auto& item : j.at("items")) {
+            NewsItem n;
+            n.title = stripNaverMarkup(item.value("title", ""));
+            n.description = stripNaverMarkup(item.value("description", ""));
+            if (!n.title.empty()) result.push_back(std::move(n));
+        }
+        return result;
+    } catch (const std::exception&) {
         return {};
     }
 }

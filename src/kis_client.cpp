@@ -131,13 +131,31 @@ std::vector<StockInfo> KisClient::getTopVolumeStocks(int count) {
             seen.insert(c);
             double price = std::stod(row.value("stck_prpr", "0"));
             double dayChangePct = std::stod(row.value("prdy_ctrt", "0"));
-            result.push_back({c, name, price, dayChangePct});
+            // vol_inrt: 전일 거래량 대비 오늘 거래량 비율(%) -- confirmed live, matches
+            // inquire-price's prdy_vrss_vol_rate for the same stock. Free from this same
+            // ranking call, no separate request needed for the volume-surge signal.
+            double volumeSurgePct = std::stod(row.value("vol_inrt", "0"));
+            result.push_back({c, name, price, dayChangePct, volumeSurgePct});
         }
     }
     return result;
 }
 
-std::vector<double> KisClient::getDailyCloses(const std::string& code, int count) {
+Fundamentals KisClient::getFundamentals(const std::string& code) {
+    // Confirmed live (2026-07-23): per/pbr/eps/bps and bstp_kor_isnm (KRX 업종 한글명) all
+    // present in inquire-price's output -- 005930/000660 both came back "전기·전자".
+    std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code;
+    auto body = request("/uapi/domestic-stock/v1/quotations/inquire-price", "GET", "FHKST01010100", query, true);
+    auto j = json::parse(body);
+    auto& out = j.at("output");
+    Fundamentals f;
+    f.per = std::stod(out.value("per", "0"));
+    f.pbr = std::stod(out.value("pbr", "0"));
+    f.sector = out.value("bstp_kor_isnm", "");
+    return f;
+}
+
+std::vector<DailyBar> KisClient::getDailyBars(const std::string& code, int count) {
     std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code +
                          "&FID_INPUT_DATE_1=" + dateOffset(count * 2 + 10) +
                          "&FID_INPUT_DATE_2=" + dateOffset(0) +
@@ -145,17 +163,24 @@ std::vector<double> KisClient::getDailyCloses(const std::string& code, int count
     auto body = request("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "GET",
                          "FHKST03010100", query, true);
     auto j = json::parse(body);
-    std::vector<double> closes;
+    std::vector<DailyBar> bars;
+    // stck_hgpr/stck_lwpr/acml_vol confirmed live (2026-07-24) in the same output2 rows as
+    // stck_clpr -- no separate call needed for the volume-profile signal (strategy.hpp).
     for (auto& row : j.at("output2")) {
         if (!row.contains("stck_clpr")) continue;
         std::string s = row.at("stck_clpr").get<std::string>();
         if (s.empty()) continue;
-        closes.push_back(std::stod(s));
+        DailyBar b;
+        b.close = std::stod(s);
+        b.high = std::stod(row.value("stck_hgpr", "0"));
+        b.low = std::stod(row.value("stck_lwpr", "0"));
+        b.volume = std::stod(row.value("acml_vol", "0"));
+        bars.push_back(b);
     }
-    // KIS returns most-recent-first; SMA wants oldest-first.
-    std::reverse(closes.begin(), closes.end());
-    if ((int)closes.size() > count) closes.erase(closes.begin(), closes.end() - count);
-    return closes;
+    // KIS returns most-recent-first; SMA/volume-profile both want oldest-first.
+    std::reverse(bars.begin(), bars.end());
+    if ((int)bars.size() > count) bars.erase(bars.begin(), bars.end() - count);
+    return bars;
 }
 
 double KisClient::getBuyableCash() {

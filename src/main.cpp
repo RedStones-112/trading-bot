@@ -1,8 +1,10 @@
 #include "broker.hpp"
+#include "event_calendar.hpp"
 #include "kis_client.hpp"
 #include "mock_broker.hpp"
 #include "news_crawler.hpp"
 #include "sim_broker.hpp"
+#include "stock_tags.hpp"
 #include "strategy.hpp"
 #include "../third_party/json.hpp"
 #include <algorithm>
@@ -120,11 +122,30 @@ static std::string signalStr(Signal s) {
     return s == Signal::Buy ? "BUY" : s == Signal::Sell ? "SELL" : "HOLD";
 }
 
-// Crude mapping from a keyword-count sentiment score to a pseudo-probability of the
-// trade working out: each net keyword hit nudges it 5%, clamped to a sane range. This
-// is a heuristic, not a calibrated statistical estimate -- there's no backtest behind it.
-static double probabilityFromSentiment(double sentiment) {
-    return std::clamp(0.5 + sentiment * 0.05, 0.05, 0.95);
+// v1 heuristic for lazily auto-tagging an unfamiliar stock (see stock_tags.hpp): count
+// which of a small fixed list of common sector/theme words show up in headlines that
+// also mention `stockName`, return the top few by hit count. Crude keyword co-occurrence,
+// not real topic modeling -- same "heuristic, not NLP" spirit as scoreSentiment. Meant to
+// be refined later (manually, or with the KRX 업종 field from getFundamentals when that's
+// usable) -- flagged in PROGRESS.md as an approximation to revisit.
+static std::vector<std::string> extractCooccurringKeywords(const std::vector<NewsItem>& headlines,
+                                                             const std::string& stockName) {
+    static const std::vector<std::string> knownThemes = {
+        "반도체", "AI", "전기전자", "전기·전자", "바이오", "제약", "2차전지", "자동차", "조선",
+        "화학", "금융", "건설", "에너지", "게임", "인터넷", "방산", "철강", "로봇", "우주항공"
+    };
+    std::map<std::string, int> counts;
+    for (auto& item : headlines) {
+        std::string text = item.title + " " + item.description;
+        if (text.find(stockName) == std::string::npos) continue;
+        for (auto& theme : knownThemes)
+            if (text.find(theme) != std::string::npos) counts[theme]++;
+    }
+    std::vector<std::pair<std::string, int>> sorted(counts.begin(), counts.end());
+    std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) { return a.second > b.second; });
+    std::vector<std::string> result;
+    for (size_t i = 0; i < sorted.size() && i < 3; i++) result.push_back(sorted[i].first);
+    return result;
 }
 
 struct Position {
@@ -133,6 +154,7 @@ struct Position {
     double avgBuyPrice = 0.0;
     double lastKnownPrice = 0.0;
     std::vector<double> baseCloses; // historical closes for `code`, not including today
+    std::vector<DailyBar> baseBars; // historical OHLCV for `code`, not including today -- volume-profile input
     int topUps = 0; // number of buys into this position after the one that opened it
 };
 
@@ -238,7 +260,6 @@ int main() {
     double taxRate = cfg.value("tax_rate", 0.0018);        // 증권거래세, 매도 시에만 -- 시장/시기에 따라 바뀌므로 확인 필요
     double takeProfitPct = cfg.value("take_profit_pct", 0.02); // 수수료/세금 차감 후 이 이상 순이익이면 매도
     double stopLossPct = cfg.value("stop_loss_pct", 0.03); // 수수료/세금 차감 후 이 이상 손실이면 즉시 매도
-    double badNewsThreshold = cfg.value("bad_news_sentiment_threshold", -2.0); // 보유 종목 뉴스감성이 이 이하면 즉시 매도
     // 고정비율 리스크 모델(fixed-fractional risk model) -- 매수 수량을 "이 트레이드가
     // stop_loss_pct에서 손절되면 총자산의 이 비율만큼만 잃는다"는 조건으로 역산함.
     // position_cash_fraction/max_position_value_fraction은 그 위에 안전판으로 계속 적용됨
@@ -249,16 +270,31 @@ int main() {
     // 계속 작동, 새 리스크만 안 늚). trades.log에서 오늘 날짜분을 합산해 복원되므로
     // 재시작해도 같은 날이면 한도 계산이 끊기지 않음.
     double dailyLossLimitPct = cfg.value("daily_loss_limit_pct", 0.05);
+    // 이 서킷브레이커 자체를 끄고 싶을 때(예: 백테스트/짧은 검증 실행)를 위한 on/off 스위치.
+    bool dailyLossLimitEnabled = cfg.value("daily_loss_limit_enabled", true);
     std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
         "https://www.mk.co.kr/rss/50200011/",
         "https://www.hankyung.com/feed/economy",
         "https://www.yna.co.kr/rss/economy.xml",
     });
-    NewsCrawler news(newsFeeds);
+    // Optional -- free registration at developers.naver.com. Blank means Naver search is
+    // silently skipped (logged once below, not per-scan, so a missing key doesn't look
+    // identical to "no results today").
+    std::string naverClientId = cfg.value("naver_client_id", "");
+    std::string naverClientSecret = cfg.value("naver_client_secret", "");
+    NewsCrawler news(newsFeeds, naverClientId, naverClientSecret);
+    StockTagStore tagStore("stock_tags.json");
+    // 배당일/법률·정치 이벤트 등 "날짜가 정해진" 재료 -- 무료 API로 안정적으로 커버가
+    // 안 돼서(DART 배당, 선거/입법 일정 전부 별도 키/스크래핑 필요) 수동 큐레이션 파일로
+    // 둠. events.json.example 참고, 파일 없으면 그냥 빈 목록(배수 항상 1.0).
+    auto eventCalendar = loadEventCalendar("events.json");
+    log("이벤트 캘린더 " + std::to_string(eventCalendar.size()) + "건 로드");
 
     log("starting trading bot: watchlist=" + std::to_string(watchlistSize) + " sma(" +
         std::to_string(shortPeriod) + "," + std::to_string(longPeriod) + ") take_profit=" +
         std::to_string(takeProfitPct * 100) + "% mode=" + mode);
+    if (naverClientId.empty() || naverClientSecret.empty())
+        log("네이버뉴스 비활성화: naver_client_id/naver_client_secret 미설정");
 
     try {
         client->authenticate();
@@ -374,8 +410,8 @@ int main() {
             log("실계좌 보유 종목 " + std::to_string(holdings.size()) + "개 발견 -- 포지션 복원 중...");
             for (auto& h : holdings) {
                 std::string label = h.name + "(" + h.code + ")";
-                auto closes = retryUntilSuccess([&] { return client->getDailyCloses(h.code, longPeriod + 5); },
-                                                 "  " + label + " 일봉 조회");
+                auto bars = retryUntilSuccess([&] { return client->getDailyBars(h.code, longPeriod + 5); },
+                                              "  " + label + " 일봉 조회");
                 std::this_thread::sleep_for(apiPause);
                 Position p;
                 p.code = h.code;
@@ -383,7 +419,8 @@ int main() {
                 p.qty = h.qty;
                 p.avgBuyPrice = h.avgBuyPrice;
                 p.lastKnownPrice = h.avgBuyPrice;
-                p.baseCloses = closes;
+                for (auto& bar : bars) p.baseCloses.push_back(bar.close);
+                p.baseBars = bars;
                 { std::lock_guard<std::mutex> lock(shared.mtx); shared.positions[h.code] = p; }
                 log("  복원: " + label + " " + std::to_string(h.qty) + "주, 평단가 " + krw(h.avgBuyPrice));
             }
@@ -424,7 +461,7 @@ int main() {
         return observed;
     };
 
-    // Shared by Phase A (dead-cross/take-profit/bad-news sells) and Phase B (rotation
+    // Shared by Phase A (dead-cross/take-profit/stop-loss sells) and Phase B (rotation
     // evictions) -- places the sell order, confirms the fill (paper/live), logs it, and
     // updates/removes the position + frees cash for whatever Phase B decides to do next.
     auto sellPosition = [&](const Position& p, double current, const std::string& reason) {
@@ -492,9 +529,9 @@ int main() {
                 continue;
             }
 
-            // Phase A: refresh every held position, sell on dead-cross/take-profit/bad-news.
+            // Phase A: refresh every held position, sell on dead-cross/take-profit/stop-loss.
             // Positions that survive get their freshly computed EV cached in heldEv so a
-            // Phase B rotation decision can reuse it instead of re-fetching price/news.
+            // Phase B rotation decision can reuse it instead of re-fetching price/technicals.
             std::vector<Position> heldSnapshot;
             { std::lock_guard<std::mutex> lock(shared.mtx);
               for (auto& [code, p] : shared.positions) heldSnapshot.push_back(p); }
@@ -512,21 +549,18 @@ int main() {
                     double pnl = (current - p.avgBuyPrice) * p.qty;
                     double netPct = netProfitPct(p.avgBuyPrice, current, feeRate, taxRate);
 
-                    // Held stock might fall out of the scan's watchlist entirely (it's ranked
-                    // by volume, not by "do we own it") -- so don't rely on the scan's news
-                    // pool for it. Search by name directly instead, every poll.
-                    double newsSentiment = 0.0;
-                    if (mode != "mock") {
-                        auto heldNews = NewsCrawler::searchHeadlines(p.name);
-                        std::this_thread::sleep_for(apiPause);
-                        newsSentiment = NewsCrawler::scoreSentiment(heldNews, p.name);
-                    }
-                    bool badNews = mode != "mock" && newsSentiment <= badNewsThreshold;
+                    // 뉴스 감성 대신 기술적 신호(거래량/추세/매물대 위치)로 확률 추정 --
+                    // 단타인데 뉴스는 장기 재료인 경우가 많아 오히려 손실 유발(사용자 확인,
+                    // 2026-07-24). p.baseBars는 매수 시점에 캐시된 값(매 poll 재조회 안 함,
+                    // baseCloses와 같은 방식).
+                    double trendPct = p.baseCloses.empty() ? 0.0 : (current - p.baseCloses.front()) / p.baseCloses.front();
+                    double belowRatio = belowPriceVolumeRatio(p.baseBars, current);
 
                     log(label + " 현재가=" + krw(current) + " 시그널=" + signalStr(sig) + " 보유=" +
                         std::to_string(p.qty) + "주, 평단가 " + krw(p.avgBuyPrice) + ", 평가손익 " + krw(pnl) +
                         ", 순손익률 " + std::to_string(netPct * 100) + "%" +
-                        (mode != "mock" ? ", 뉴스감성 " + std::to_string(newsSentiment) : ""));
+                        ", 매물대비중(하단) " + std::to_string(belowRatio) +
+                        ", 추세 " + std::to_string(trendPct * 100) + "%");
 
                     { std::lock_guard<std::mutex> lock(shared.mtx);
                       auto it = shared.positions.find(p.code);
@@ -534,11 +568,14 @@ int main() {
 
                     bool takeProfitHit = netPct >= takeProfitPct;
                     bool stopLossHit = netPct <= -stopLossPct;
-                    if (sig == Signal::Sell || takeProfitHit || stopLossHit || badNews) {
-                        std::string reason = badNews ? "악재" : takeProfitHit ? "익절" : stopLossHit ? "손절" : "데드크로스";
+                    if (sig == Signal::Sell || takeProfitHit || stopLossHit) {
+                        std::string reason = takeProfitHit ? "익절" : stopLossHit ? "손절" : "데드크로스";
                         sellPosition(p, current, reason);
                     } else {
-                        double probability = probabilityFromSentiment(newsSentiment);
+                        // 100.0 = "거래량 변화 없음"(vol_inrt 중립값) -- 보유 종목은 거래량순위
+                        // 랭킹 데이터를 다시 조회하지 않으므로(스캔에서 벗어났을 수도 있어서
+                        // 애초에 못 구함) 거래량 급증 신호 없이 매물대/추세만으로 판단.
+                        double probability = probabilityFromTechnicals(100.0, trendPct, belowRatio);
                         double gain = current * takeProfitPct;
                         heldEv[p.code] = gain * probability;
                     }
@@ -559,7 +596,7 @@ int main() {
               for (auto& [code, p] : shared.positions) otherValue += p.qty * p.lastKnownPrice; }
             double totalEquity = buyableCash + otherValue;
 
-            if (todayRealizedPnl <= -dailyLossLimitPct * totalEquity) {
+            if (dailyLossLimitEnabled && todayRealizedPnl <= -dailyLossLimitPct * totalEquity) {
                 log("일일 손실 한도 도달 (오늘 실현손익 " + krw(todayRealizedPnl) + ", 한도 -" +
                     krw(dailyLossLimitPct * totalEquity) + ") -- 오늘은 신규 매수 중단, 모니터링/매도만 계속");
                 std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
@@ -599,6 +636,18 @@ int main() {
                 double current;
                 double ev;
                 std::vector<double> closes;
+                // EV 정교화용: probability는 감성 전용으로 그대로 두고(안 건드림), 나머지
+                // 3개 신호는 gain에 곱하는 독립적인 배수로 적용 -- 하나의 clamp된
+                // probability에 다 합치면 강한 신호가 다른 신호를 집어삼키거나 클램프에서
+                // 정보가 사라지는 문제가 있어서(랭킹 동점 처리가 엉망이 됨), 이렇게 분리.
+                double gain = 0.0, probability = 0.0;
+                double per = 0.0, pbr = 0.0;
+                std::vector<DailyBar> bars; // for Position.baseBars once bought (volume-profile input)
+                std::string sector;
+                double valuationMult = 1.0;  // ①: 동종업계 대비 저평가, buyCandidates 확정 후 2차 계산
+                double momentumMult = 1.0;   // ③: 연관종목(태그) 모멘텀 전이
+                double interestMult = 1.0;   // ⑤: 뉴스 언급량 + 거래량 급증률
+                double eventMult = 1.0;      // 배당일/법률/정치 이벤트 캘린더 (수동 큐레이션)
             };
             std::vector<BuyCandidate> buyCandidates;
 
@@ -606,29 +655,180 @@ int main() {
                 std::string label = c.name + "(" + c.code + ")";
                 try {
                     // c.price came from the ranking call itself -- no separate quote needed.
-                    auto closes = client->getDailyCloses(c.code, longPeriod + 5);
+                    auto bars = client->getDailyBars(c.code, longPeriod + 5);
                     std::this_thread::sleep_for(apiPause);
+                    std::vector<double> closes;
+                    closes.reserve(bars.size() + 1);
+                    for (auto& bar : bars) closes.push_back(bar.close);
                     closes.push_back(c.price);
 
                     Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
-                    double sentiment = NewsCrawler::scoreSentiment(headlines, c.name);
 
                     if (sig == Signal::Buy) {
-                        // 기댓값 = 얻을 이득 x 얻을 확률. 이득은 익절 목표치, 확률은 뉴스 감성에서 추정.
-                        double probability = probabilityFromSentiment(sentiment);
+                        // 기댓값 = 얻을 이득 x 얻을 확률. 뉴스 감성 대신 기술적 신호로 확률
+                        // 추정(사용자 확인, 2026-07-24): 단타 봇인데 뉴스는 장기 재료인 경우가
+                        // 많아 오히려 손실을 유발했음 -- 거래량 급증률(이미 있는 c.volumeSurgePct),
+                        // 최근 구간 추세, 매물대(가격대별 거래량) 위치로 교체. 매물대 위치가
+                        // "실제로 거래된 물량이 지금 가격보다 위/아래 어디 쏠려있나"를 가장
+                        // 직접적으로 보여줘서 가장 크게 반영됨(strategy.hpp 참고).
+                        double trendPct = bars.empty() ? 0.0 : (c.price - bars.front().close) / bars.front().close;
+                        double belowRatio = belowPriceVolumeRatio(bars, c.price);
+                        double probability = probabilityFromTechnicals(c.volumeSurgePct, trendPct, belowRatio);
                         double gain = c.price * takeProfitPct;
-                        double ev = gain * probability;
+
+                        // ① PER + 업종(fundamentals) -- BUY 후보에게만 조회(비용 통제).
+                        // 밸류에이션 배수는 buyCandidates가 다 모인 뒤 동종업계 평균과
+                        // 비교해서 계산(아래 2차 패스).
+                        Fundamentals fund;
+                        try {
+                            fund = client->getFundamentals(c.code);
+                            std::this_thread::sleep_for(apiPause);
+                        } catch (const std::exception& e) {
+                            log("  " + label + " 재무정보 조회 실패: " + e.what());
+                        }
+
+                        // ③ 태그 지연 채우기 -- 처음 보는 종목이면 업종 + 헤드라인
+                        // co-occurrence로 휴리스틱 태그를 붙여서 저장(근사치, PROGRESS.md 참고).
+                        const StockTags* existingTags = tagStore.find(c.code);
+                        std::vector<std::string> tagsForC;
+                        if (existingTags) {
+                            tagsForC = existingTags->tags;
+                        } else {
+                            if (!fund.sector.empty()) tagsForC.push_back(fund.sector);
+                            for (auto& kw : extractCooccurringKeywords(headlines, c.name))
+                                if (std::find(tagsForC.begin(), tagsForC.end(), kw) == tagsForC.end())
+                                    tagsForC.push_back(kw);
+                            tagStore.set(c.code, StockTags{c.name, tagsForC, "", timestamp().substr(0, 10)});
+                            if (!tagsForC.empty()) {
+                                std::string joined;
+                                for (auto& t : tagsForC) joined += (joined.empty() ? "" : ",") + t;
+                                log("  " + label + " 휴리스틱 태그 부여: [" + joined + "]");
+                            }
+                        }
+
+                        // ③ 모멘텀 전이 -- 같은 스캔의 다른 종목 중 오늘 이미 급등했고(임계값
+                        // 이상 dayChangePct, 이미 공짜로 있음) 태그가 겹치는 종목이 있으면
+                        // 그만큼 가중치를 더함. 태그를 모르는 종목은(아직 안 만난 종목)
+                        // 기여분 없음 -- 오류가 아니라 정보 없음으로 취급.
+                        const double kSurgeThresholdPct = 5.0; // "오늘 이미 오른" 기준, 튜닝 대상
+                        const int kEventLookaheadDays = 14; // 이 안에 든 이벤트만 반영, 튜닝 대상
+                        double momentumScore = 0.0;
+                        if (!tagsForC.empty()) {
+                            for (auto& other : candidates) {
+                                if (other.code == c.code || other.dayChangePct < kSurgeThresholdPct) continue;
+                                auto* otherTags = tagStore.find(other.code);
+                                if (!otherTags) continue;
+                                int overlap = 0;
+                                for (auto& t : tagsForC)
+                                    if (std::find(otherTags->tags.begin(), otherTags->tags.end(), t) !=
+                                        otherTags->tags.end())
+                                        overlap++;
+                                if (overlap > 0) momentumScore += overlap * other.dayChangePct;
+                            }
+                        }
+                        double momentumMult = std::clamp(1.0 + momentumScore * 0.002, 0.8, 1.3);
+
+                        // ⑤ 관심도 -- 이번 스캔에서 이미 모은 헤드라인 풀에서 언급 횟수(단순
+                        // 카운트, 롤링 추세는 2단계) + 거래량 급증률(vol_inrt, 100 = 전일과
+                        // 동일, 그 이상이면 급증 -- 역시 이미 공짜로 있음).
+                        int mentionCount = 0;
+                        for (auto& item : headlines) {
+                            std::string text = item.title + " " + item.description;
+                            if (text.find(c.name) != std::string::npos) mentionCount++;
+                        }
+                        double interestMult = std::clamp(
+                            1.0 + 0.03 * mentionCount + 0.0005 * (c.volumeSurgePct - 100.0), 0.8, 1.3);
+
+                        // 이벤트 배수 -- 종목코드/업종·테마 태그/"ALL" 중 하나로 매칭되는
+                        // 예정된 이벤트(배당일/법률/정치 일정)가 event_lookahead_days 이내면
+                        // 날짜에 가까울수록 크게 반영(events.json.example 참고).
+                        double eventMult = eventMultiplier(eventCalendar, c.code, tagsForC,
+                                                            timestamp().substr(0, 10), kEventLookaheadDays);
+
                         log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig) +
-                            " 뉴스감성=" + std::to_string(sentiment) + " 기댓값=" + std::to_string(ev));
-                        buyCandidates.push_back({c.code, c.name, c.price, ev, closes});
+                            " 매물대비중(하단)=" + std::to_string(belowRatio) + " 추세=" +
+                            std::to_string(trendPct * 100) + "% PER=" + std::to_string(fund.per) +
+                            " PBR=" + std::to_string(fund.pbr) +
+                            " 업종=" + (fund.sector.empty() ? "?" : fund.sector) + " 모멘텀×" +
+                            std::to_string(momentumMult) + " 관심도×" + std::to_string(interestMult) +
+                            "(언급 " + std::to_string(mentionCount) + "건, 거래량비 " +
+                            std::to_string(c.volumeSurgePct) + "%) 이벤트×" + std::to_string(eventMult));
+
+                        BuyCandidate cand;
+                        cand.code = c.code; cand.name = c.name; cand.current = c.price;
+                        cand.closes = closes; cand.bars = bars; cand.gain = gain; cand.probability = probability;
+                        cand.per = fund.per; cand.pbr = fund.pbr; cand.sector = fund.sector;
+                        cand.momentumMult = momentumMult; cand.interestMult = interestMult;
+                        cand.eventMult = eventMult;
+                        cand.ev = gain * probability; // 밸류에이션 배수 반영 전 임시값, 2차 패스에서 확정
+                        buyCandidates.push_back(std::move(cand));
                     } else {
-                        log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig) +
-                            " 뉴스감성=" + std::to_string(sentiment));
+                        log("  " + label + " 현재가=" + krw(c.price) + " 시그널=" + signalStr(sig));
                     }
                 } catch (const std::exception& e) {
                     log("  " + label + " 조회 실패: " + e.what());
                 }
             }
+
+            // ① 밸류에이션 배수 2차 패스 -- 후보들이 다 모여야 "동종업계 평균"을 낼 수 있음.
+            // 같은 업종을 공유하는 다른 후보가 2개 이상(본인 포함 3개 이상)일 때만 적용 --
+            // 그 미만이면 "평균"이라는 말이 무의미해서 배수 1.0(미적용).
+            // PER(이익 기준)만 보면 "PER이 높다 = 비싸다"로 단정하게 되는데, 이익 기준과
+            // 자산 기준(PBR)이 서로 반대로 갈리는 경우를 놓침 -- 예: 이익이 일시적으로
+            // 눌려서 PER은 동종업계보다 높아 보이지만, 순자산 대비로는(PBR) 동종업계보다
+            // 훨씬 싸게 거래되는 종목. 그래서 PER 비율과 PBR 비율을 각각 구해서(둘 다
+            // "peer 평균 ÷ 본인", 크면 저평가) 평균낸 값을 최종 밸류에이션 배수로 씀 --
+            // 한쪽 지표만으로 비싸다고 판정됐어도 다른 쪽이 충분히 싸면 상쇄됨.
+            for (auto& cand : buyCandidates) {
+                if (cand.sector.empty()) continue;
+                std::vector<double> peerPers, peerPbrs;
+                for (auto& other : buyCandidates) {
+                    if (other.code == cand.code || other.sector != cand.sector) continue;
+                    if (other.per > 0) peerPers.push_back(other.per);
+                    if (other.pbr > 0) peerPbrs.push_back(other.pbr);
+                }
+                double ratioSum = 0.0;
+                int ratioCount = 0;
+                if (cand.per > 0 && peerPers.size() >= 2) {
+                    double peerAvg = 0.0;
+                    for (double p : peerPers) peerAvg += p;
+                    peerAvg /= peerPers.size();
+                    double perRatio = peerAvg / cand.per;
+                    ratioSum += perRatio; ratioCount++;
+                    log("  " + cand.name + "(" + cand.code + ") 동종업계(" + cand.sector + ") 평균PER " +
+                        std::to_string(peerAvg) + " vs 본인 " + std::to_string(cand.per) + " -> PER비율 " +
+                        std::to_string(perRatio));
+                }
+                if (cand.pbr > 0 && peerPbrs.size() >= 2) {
+                    double peerAvg = 0.0;
+                    for (double p : peerPbrs) peerAvg += p;
+                    peerAvg /= peerPbrs.size();
+                    double pbrRatio = peerAvg / cand.pbr;
+                    ratioSum += pbrRatio; ratioCount++;
+                    log("  " + cand.name + "(" + cand.code + ") 동종업계(" + cand.sector + ") 평균PBR " +
+                        std::to_string(peerAvg) + " vs 본인 " + std::to_string(cand.pbr) + " -> PBR비율 " +
+                        std::to_string(pbrRatio));
+                }
+                if (ratioCount == 0) {
+                    log("  " + cand.name + "(" + cand.code + ") 동종업계(" + cand.sector +
+                        ") PER/PBR 비교 대상 부족 -- 밸류에이션 배수 미적용");
+                    continue;
+                }
+                cand.valuationMult = std::clamp(ratioSum / ratioCount, 0.8, 1.3);
+                log("  " + cand.name + "(" + cand.code + ") 밸류에이션×" + std::to_string(cand.valuationMult) +
+                    " (PER/PBR " + std::to_string(ratioCount) + "개 신호 평균)");
+            }
+            // 네 배수를 gain에 곱해 최종 기댓값 확정. probability는 감성 전용으로 안 건드림.
+            for (auto& cand : buyCandidates) {
+                double adjustedGain = cand.gain * cand.valuationMult * cand.momentumMult *
+                                       cand.interestMult * cand.eventMult;
+                cand.ev = adjustedGain * cand.probability;
+                log("  " + cand.name + "(" + cand.code + ") 최종 기댓값=" + std::to_string(cand.ev) +
+                    " (밸류에이션×" + std::to_string(cand.valuationMult) + " 모멘텀×" +
+                    std::to_string(cand.momentumMult) + " 관심도×" + std::to_string(cand.interestMult) +
+                    " 이벤트×" + std::to_string(cand.eventMult) + ")");
+            }
+
             // BUY 시그널이 여러 개 떠도 사이클당 실제 매수는 하나만 실행하되, 기댓값 1등이
             // 상한(추가매수 횟수/투입비율/자금부족)에 막히면 2등, 3등으로 계속 넘어가며
             // 시도함 -- 안 그러면 1등 종목 하나가 계속 막혀있는 동안 다른 후보들이 전부
@@ -796,6 +996,7 @@ int main() {
                                 p.qty = filledQty;
                                 p.avgBuyPrice = cand.current;
                                 p.baseCloses = std::vector<double>(cand.closes.begin(), cand.closes.end() - 1);
+                                p.baseBars = cand.bars;
                             }
                             p.lastKnownPrice = cand.current;
                         }
