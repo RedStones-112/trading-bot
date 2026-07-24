@@ -11,6 +11,8 @@ add_executable(trading_bot
     src/sim_broker.cpp
     src/news_crawler.cpp
     src/http_client.cpp
+    src/stock_tags.cpp
+    src/event_calendar.cpp
 )
 
 target_link_libraries(trading_bot PRIVATE winhttp)
@@ -20,5 +22,6 @@ add_executable(test_strategy
     src/mock_broker.cpp
     src/news_crawler.cpp
     src/http_client.cpp
+    src/event_calendar.cpp
 )
 target_link_libraries(test_strategy PRIVATE winhttp)
