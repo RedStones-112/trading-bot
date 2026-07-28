@@ -2,6 +2,8 @@ config.json
 trading.log
 trades.log
 holdings.txt
+performance_report.txt
 sim_fills.log
 pending_orders.txt
+ml_models/
 build/

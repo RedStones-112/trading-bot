@@ -1,10 +1,74 @@
 {
+  "014940": {
+    "lastUpdated": "2026-07-28",
+    "name": "오리엔탈정공",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
   "014970": {
     "lastUpdated": "2026-07-24",
     "name": "삼륭물산",
     "parentCompany": "",
     "tags": [
       "종이·목재"
+    ]
+  },
+  "041020": {
+    "lastUpdated": "2026-07-27",
+    "name": "폴라리스오피스",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
+  "054540": {
+    "lastUpdated": "2026-07-28",
+    "name": "삼영엠텍",
+    "parentCompany": "",
+    "tags": [
+      "금속"
+    ]
+  },
+  "108860": {
+    "lastUpdated": "2026-07-27",
+    "name": "셀바스AI",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
+  "142760": {
+    "lastUpdated": "2026-07-28",
+    "name": "모아라이프플러스",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
+  "299660": {
+    "lastUpdated": "2026-07-28",
+    "name": "셀리드",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
+  "347860": {
+    "lastUpdated": "2026-07-27",
+    "name": "알체라",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
+  "477850": {
+    "lastUpdated": "2026-07-27",
+    "name": "마키나락스",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
     ]
   }
 }

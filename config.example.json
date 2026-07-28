@@ -61,6 +61,13 @@
   // 위 일일 손실 한도 서킷브레이커 자체를 켤지 끌지 (false면 daily_loss_limit_pct 무시)
   "daily_loss_limit_enabled": true,
 
+  // 켜면 종목별로 신경망을 학습시켜(third_party/genann) 그 종목 전용 모델로 상승확률을
+  // 추정하고 probabilityFromTechnicals(전 종목 공통 휴리스틱) 자리를 대체함. 꺼두면
+  // 기존 동작 그대로. 가중치는 ml_models/에 저장됨
+  "ml_enabled": false,
+  // 종목별 재학습 주기(일). 스캔마다 재학습하지 않고 이 일수가 지났을 때만 재학습
+  "ml_retrain_days": 1,
+
   // 스캔용 후보 스크리닝에 쓸 RSS 피드 URL 목록
   "news_feeds": [
     "https://www.mk.co.kr/rss/50200011/",

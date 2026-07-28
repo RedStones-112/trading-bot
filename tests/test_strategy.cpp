@@ -2,8 +2,11 @@
 #include "../src/mock_broker.hpp"
 #include "../src/news_crawler.hpp"
 #include "../src/event_calendar.hpp"
+#include "../src/ml_model.hpp"
 #include <cassert>
 #include <cmath>
+#include <cstdio>
+#include <direct.h>
 #include <iostream>
 
 int main() {
@@ -132,6 +135,78 @@ int main() {
     }
     // 없는 파일을 읽으면 조용히 빈 목록(스캔이 시작조차 실패하면 안 됨).
     assert(loadEventCalendar("no_such_file_events.json").empty());
+
+    // buildTrainingSet: windowBars=3, lookaheadDays=2, takeProfitPct=2%, stopLossPct=3% --
+    // anchor is always bars[2] (idx0..idx2 window), label decided by bars[3]/bars[4].
+    {
+        auto anchorBars = [](double h3, double l3, double h4, double l4) {
+            return std::vector<DailyBar>{
+                {100.0, 101.0, 99.0, 1000.0},
+                {101.0, 102.0, 100.0, 1000.0},
+                {100.0, 101.0, 99.0, 1000.0},
+                {100.0, h3, l3, 1000.0},
+                {100.0, h4, l4, 1000.0},
+            };
+        };
+        // Take-profit hit on day 1 (high 103 >= 100*1.02) -> label 1.
+        auto s1 = buildTrainingSet(anchorBars(103.0, 99.0, 101.0, 99.0), 0.02, 0.03, 2, 3, 2, 3);
+        assert(s1.size() == 1);
+        assert(s1[0].second == 1.0);
+        assert(std::fabs(s1[0].first.trendPct) < 1e-9); // window front/anchor both close=100
+        assert(std::fabs(s1[0].first.volumeSurgePct - 100.0) < 1e-9); // flat volume
+
+        // Stop-loss hit on day 1 (low 96 <= 100*0.97) -> label 0.
+        auto s2 = buildTrainingSet(anchorBars(101.0, 96.0, 101.0, 99.0), 0.02, 0.03, 2, 3, 2, 3);
+        assert(s2.size() == 1 && s2[0].second == 0.0);
+
+        // Neither threshold reached within the horizon -> label 0.
+        auto s3 = buildTrainingSet(anchorBars(101.0, 99.0, 101.0, 99.0), 0.02, 0.03, 2, 3, 2, 3);
+        assert(s3.size() == 1 && s3[0].second == 0.0);
+
+        // Both thresholds hit the same day -> ambiguous, conservatively label 0.
+        auto s4 = buildTrainingSet(anchorBars(103.0, 96.0, 101.0, 99.0), 0.02, 0.03, 2, 3, 2, 3);
+        assert(s4.size() == 1 && s4[0].second == 0.0);
+
+        // windowBars < smaLong -> refuses to produce samples rather than feeding smaMomentum
+        // a window it can't compute over.
+        assert(buildTrainingSet(anchorBars(101.0, 99.0, 101.0, 99.0), 0.02, 0.03, 2, 2, 2, 3).empty());
+    }
+
+    // MlModelStore: train/predict/persist round-trip against a throwaway directory.
+    {
+        const char* dir = "test_ml_models_tmp";
+        std::vector<DailyBar> bars;
+        for (int i = 0; i < 80; i++) {
+            double close = 100.0 + 5.0 * std::sin(i * 0.3) + i * 0.05;
+            bars.push_back({close, close * 1.01, close * 0.99, 1000.0 + i * 5});
+        }
+
+        {
+            MlModelStore store(dir);
+            assert(store.needsRetrain("000001", 1, "2026-01-01")); // never trained yet
+            int n = store.train("000001", bars, 0.02, 0.03, 5, 5, 20, "2026-01-01");
+            assert(n > 0); // 80 bars is comfortably above the minimum sample floor
+            assert(!store.needsRetrain("000001", 1, "2026-01-01")); // trained today, 0 days elapsed
+            assert(store.needsRetrain("000001", 1, "2026-01-02")); // 1 day elapsed >= retrainDays
+
+            MlFeatures f;
+            double p1 = store.predict("000001", f);
+            assert(p1 >= 0.05 && p1 <= 0.95);
+            assert(store.predict("999999", f) == -1.0); // untrained code -- no model to fall back on
+        }
+        {
+            // Fresh store instance over the same directory: weights + index must survive.
+            MlModelStore store2(dir);
+            assert(!store2.needsRetrain("000001", 1, "2026-01-01")); // index.json round-tripped
+            MlFeatures f;
+            double p2 = store2.predict("000001", f);
+            assert(p2 >= 0.05 && p2 <= 0.95); // .nn weights file round-tripped and is readable
+        }
+
+        std::remove((std::string(dir) + "/000001.nn").c_str());
+        std::remove((std::string(dir) + "/index.json").c_str());
+        _rmdir(dir);
+    }
 
     std::cout << "all tests passed\n";
     return 0;

@@ -23,6 +23,11 @@
 - `src/news_crawler.hpp/cpp`: RSS 피드 파싱(직접 짠 `<item>`/`<title>` 추출, XML
   라이브러리 없음) + Google News 검색(`news.google.com/rss/search`) + 키워드 기반
   감성 점수화
+- `src/ml_model.hpp/cpp`: 종목별 신경망(third_party/genann) 학습/예측/영속화
+  (`MlModelStore`) + 과거 일봉에서 학습셋을 만드는 순수함수 `buildTrainingSet`.
+  `ml_enabled`일 때만 쓰임 (2026-07-26, README "종목별 ML 확률 모드" 참고)
+- `src/date_util.hpp`: ISO 날짜 간 일수 차이 계산(`isoDayNumber`) -- event_calendar.cpp
+  (이벤트 lookahead)와 ml_model.cpp(재학습 주기 판단)가 같이 씀
 - `src/main.cpp`: config.json 로드 → mode별 브로커 생성 → 정규장 체크 → (보유 없으면)
   스캔/선택/매수, (보유 중이면) 모니터링/매도 루프. `holdings.txt`를 5초마다 갱신하는
   별도 스레드도 여기서 띄움.
@@ -511,6 +516,67 @@ raw JSON을 전부 덤프해서 필드 전체를 확인. 이 프로젝트 관행
   중지 후 재빌드 -- 재시작 시 시작 루틴이 실계좌 미체결 주문 정리 + 보유종목 복원을
   자동으로 하므로 강제종료가 안전함(이 설계는 이미 2026-07-23에 이런 상황을 위해
   만들어둔 것).
+
+## 종목별 ML 확률 모드 추가 (2026-07-26)
+
+사용자 요청: 종목별로 과거 그래프(일봉)를 가져와 머신러닝 모델을 만들고, 그 종목
+전용 추정으로 투자하는 모드를 config에서 켜고 끌 수 있게. 구현 전 3가지 큰 방향을
+AskUserQuestion으로 확인: (1) 구현 방식 -- C++ ML 라이브러리 추가로 결정(자체
+로지스틱회귀 구현도, Python 서브프로세스 호출도 아님), (2) 예측 대상 -- 기존
+`probabilityFromTechnicals` 자리를 대체하는 상승확률로 결정(기대수익률 자체 회귀는
+아님), (3) 학습 시점 -- 주기적 학습 + 파일 저장으로 결정(매 스캔 즉석 재학습 아님).
+
+- **라이브러리 선택**: 이 프로젝트는 WinHTTP/단일헤더 JSON처럼 외부 의존성을
+  의도적으로 최소화하는 관행이라, mlpack(Armadillo 등 의존성 체인)이나 dlib(대형)
+  대신 **genann**(codeplea/genann, MIT 유사 zlib 라이선스, `genann.h`+`genann.c`
+  단 2파일·500줄, 의존성 없는 순수 C 피드포워드 신경망)을 골라 `third_party/`에
+  vendor함 -- json.hpp를 헤더 하나 vendor한 것과 같은 패턴. `CMakeLists.txt`에
+  `project(trading_bot CXX C)`로 C 컴파일러를 추가해서 `genann.c`를 같이 빌드.
+- **모델 단위**: 종목마다 독립된 작은 신경망(입력 5 -> 은닉 8 -> 출력 1, sigmoid) --
+  한 종목의 가격 패턴이 다른 종목에 일반화된다고 볼 근거가 없어서, 공용 모델 하나가
+  아니라 종목별로 따로 둠(`MlModelStore`, `stock_tags.json`/`event_calendar`와 같은
+  "파일 기반, 없으면 빈 상태로 시작" 관용).
+- **입력 특징 5개**: 추세/매물대비중/거래량급증률/SMA모멘텀/전일대비율 -- 전부
+  `probabilityFromTechnicals`가 이미 쓰는 신호이거나 스캔이 이미 조회하는 값이라
+  ML 모드를 켜도 스캔당 API 호출이 늘지 않음([[feedback-research-before-implementing]]
+  패턴 재적용). 재학습 시에만 별도로 긴 일봉(100개)을 조회.
+- **라벨링**(`buildTrainingSet`, 순수함수): 과거 일봉을 하루씩 훑으며 그 시점 이후
+  5거래일 안에 고가가 먼저 `take_profit_pct`에 닿으면 1, 저가가 먼저
+  `stop_loss_pct`에 닿거나(혹은 같은 날 양쪽 다 닿아 애매하면) 0 -- 종가만이 아니라
+  DailyBar의 high/low를 씀(이미 다른 신호들이 확인해서 쓰고 있던 필드, 새 API
+  호출 없음).
+- **재학습 주기**: `ml_retrain_days`(기본 1일)가 지난 종목만, 스캔 도중 필요해지는
+  시점에(Phase A 모니터링 또는 Phase B 후보 평가) 재학습 -- 시작 시 전 종목을 한
+  번에 학습시키는 별도 배치는 없음(구현이 단순해지고, 실제로 후보/보유 종목으로
+  등장하는 종목만 학습 비용을 씀). 학습 이력 없는 종목은 이번 스캔에서 학습을
+  시도하고, 실패/표본부족이면 기술적 신호로 자동 대체(콜드 스타트가 매수 판단을
+  막지 않음).
+- **날짜 계산 재사용**: 재학습 주기 판단에 event_calendar.cpp가 이미 쓰던 Fliegel &
+  Van Flandern 일수 계산이 필요해서, 그 파일 안에 `static`으로 박혀있던 함수를
+  `src/date_util.hpp`로 옮겨 공유(중복 구현 대신 재사용, ponytail 관행).
+
+### 검증
+- `tests/test_strategy.cpp`에 `buildTrainingSet`(익절/손절/미도달/같은날 양쪽 애매
+  4가지 라벨링 케이스 + windowBars<smaLong 방어) + `MlModelStore`(학습 후
+  `needsRetrain`이 당일 false/다음날 true로 바뀌는 것, `predict`가 `[0.05,0.95]`
+  안에 드는 것, 새 `MlModelStore` 인스턴스로 다시 열어도 `.nn`/`index.json`이
+  그대로 읽히는 것) assert 추가, 전부 통과.
+- mock 모드 격리 드라이런(임시 디렉토리, 실계좌 `config.json`은 안 건드림)으로
+  `ml_enabled: true` 실행 -- 로그에 `ML 모델 재학습 완료 (표본 38개)`가 찍히고,
+  그 확률이 실제로 기댓값 계산에 들어가 매수 체결까지 이어지는 것 확인
+  (`가상화학(000003) 40주 매수`). `ml_models/000003.nn` + `ml_models/index.json`
+  파일이 실제로 생성되고, 새 프로세스(둘째 `MlModelStore` 인스턴스)로도 그대로
+  읽히는 것까지 테스트로 확인.
+- `test_strategy.exe` 전체 회귀 통과.
+
+### 알려진 한계
+- 종목별 신경망은 매 재학습마다 랜덤 초기화 후 처음부터 다시 학습(온라인
+  미세조정 아님) -- 재학습 사이 가중치 연속성은 없음, 표본이 적은 종목(상장 얼마
+  안 된 종목 등)은 재학습마다 결과가 꽤 달라질 수 있음.
+- 다른 휴리스틱들과 마찬가지로 실제 상승 확률과의 상관관계를 백테스트로 검증한
+  적은 없음 -- `mode: live` 투입 전에 반드시 필요.
+- 학습 데이터가 표본 최소치(20개) 미만이면 그 종목은 계속 기술적 신호로 대체됨
+  (재학습 실패가 반복돼도 로그만 남고 동작은 안전).
 
 ## 알려진 한계 / 다음에 할 만한 것
 

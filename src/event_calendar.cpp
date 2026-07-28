@@ -1,4 +1,5 @@
 #include "event_calendar.hpp"
+#include "date_util.hpp"
 #include "../third_party/json.hpp"
 #include <algorithm>
 #include <fstream>
@@ -25,17 +26,6 @@ std::vector<ScheduledEvent> loadEventCalendar(const std::string& filePath) {
         if (!ev.target.empty() && !ev.date.empty()) events.push_back(std::move(ev));
     }
     return events;
-}
-
-// Fliegel & Van Flandern proleptic Gregorian day count -- plain integer arithmetic, no
-// std::mktime/timezone/DST edge cases to worry about for a simple date difference.
-static long dayNumber(int y, int m, int d) {
-    int a = (14 - m) / 12, yy = y + 4800 - a, mm = m + 12 * a - 3;
-    return d + (153 * mm + 2) / 5 + 365L * yy + yy / 4 - yy / 100 + yy / 400 - 32045;
-}
-
-static long isoDayNumber(const std::string& iso) {
-    return dayNumber(std::stoi(iso.substr(0, 4)), std::stoi(iso.substr(5, 2)), std::stoi(iso.substr(8, 2)));
 }
 
 double eventMultiplier(const std::vector<ScheduledEvent>& events, const std::string& code,

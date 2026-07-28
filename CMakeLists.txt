@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(trading_bot CXX)
+project(trading_bot CXX C) # C needed for third_party/genann.c (ml_model.cpp's neural net)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -13,6 +13,8 @@ add_executable(trading_bot
     src/http_client.cpp
     src/stock_tags.cpp
     src/event_calendar.cpp
+    src/ml_model.cpp
+    third_party/genann.c
 )
 
 target_link_libraries(trading_bot PRIVATE winhttp)
@@ -23,5 +25,7 @@ add_executable(test_strategy
     src/news_crawler.cpp
     src/http_client.cpp
     src/event_calendar.cpp
+    src/ml_model.cpp
+    third_party/genann.c
 )
 target_link_libraries(test_strategy PRIVATE winhttp)

@@ -1,6 +1,7 @@
 #include "broker.hpp"
 #include "event_calendar.hpp"
 #include "kis_client.hpp"
+#include "ml_model.hpp"
 #include "mock_broker.hpp"
 #include "news_crawler.hpp"
 #include "sim_broker.hpp"
@@ -161,30 +162,159 @@ struct Position {
 struct SharedState {
     std::mutex mtx;
     std::map<std::string, Position> positions; // keyed by code -- multiple concurrent holdings
+    double cash = 0.0; // last known buyable cash (매수가능금액), refreshed once per main-loop cycle
 };
 
+// One closed (SELL) trade's price-only gross P&L and transaction cost, reconstructed from
+// a trades.log row for the 손익 attribution report below.
+struct RealizedTrade {
+    std::string code, name;
+    double grossPnl = 0.0, feeCost = 0.0, taxCost = 0.0;
+};
+
+// trades.log only stores the sell price (buy price isn't logged per-trade -- multiple
+// top-ups blend into one avgBuyPrice that isn't preserved either), so the buy-leg fee is
+// approximated using the sell price instead of the true buy price -- same feeRate both
+// legs and short holding periods keep the two prices close, so the error is second-order
+// (feeRate x price gap x qty, negligible next to feeRate itself being ~0.015%). This lets
+// the attribution report work on trades.log as it already exists, no format change needed.
+static std::vector<RealizedTrade> loadRealizedTrades() {
+    std::vector<RealizedTrade> result;
+    std::ifstream in("trades.log");
+    std::string line;
+    while (std::getline(in, line)) {
+        std::stringstream ss(line);
+        std::vector<std::string> fields;
+        std::string field;
+        while (std::getline(ss, field, ',')) fields.push_back(field);
+        if (fields.size() < 9 || fields[1] != "SELL") continue;
+        try {
+            int qty = std::stoi(fields[4]);
+            double price = std::stod(fields[5]);
+            double feeRate = std::stod(fields[6]);
+            double taxRate = std::stod(fields[7]);
+            double netProfit = std::stod(fields[8]);
+            RealizedTrade t;
+            t.code = fields[2];
+            t.name = fields[3];
+            t.feeCost = price * feeRate * qty * 2; // both legs, buy leg approximated via sell price
+            t.taxCost = price * taxRate * qty;
+            t.grossPnl = netProfit + t.feeCost + t.taxCost;
+            result.push_back(t);
+        } catch (const std::exception&) {
+            // malformed/partial line -- skip it rather than let one bad row abort the report
+        }
+    }
+    return result;
+}
+
+// Attributes the account's total P&L (vs initialCash) to its sources -- so "왜 -35%인지"
+// is answerable without doing the arithmetic by hand: realized per-symbol price moves (fees
+// and tax pulled out into their own lines, so they're not silently buried inside each
+// symbol's number), plus unrealized per-symbol price moves on positions still open (their
+// buy-side fee is already-paid cash, shown separately -- sell-side fee/tax hasn't happened
+// yet). `positionsSnapshot` must be a copy, not a live reference, so this can run without
+// holding shared->mtx while it does trades.log file I/O.
+static void writePerformanceReport(const std::map<std::string, Position>& positionsSnapshot,
+                                    double initialCash, double feeRate) {
+    auto realized = loadRealizedTrades();
+    std::map<std::string, double> grossBySymbol;
+    std::map<std::string, std::string> nameByCode;
+    double totalFee = 0.0, totalTax = 0.0;
+    for (auto& t : realized) {
+        grossBySymbol[t.code] += t.grossPnl;
+        nameByCode[t.code] = t.name;
+        totalFee += t.feeCost;
+        totalTax += t.taxCost;
+    }
+    double realizedGrossTotal = 0.0;
+    for (auto& [code, g] : grossBySymbol) realizedGrossTotal += g;
+    double realizedNet = realizedGrossTotal - totalFee - totalTax;
+
+    double unrealizedGrossTotal = 0.0, unrealizedBuyFeeTotal = 0.0;
+    for (auto& [code, pos] : positionsSnapshot) {
+        unrealizedGrossTotal += (pos.lastKnownPrice - pos.avgBuyPrice) * pos.qty;
+        unrealizedBuyFeeTotal += pos.avgBuyPrice * pos.qty * feeRate;
+    }
+
+    auto pct = [&](double v) { return initialCash > 0 ? v / initialCash * 100.0 : 0.0; };
+    double totalPnl = realizedNet + unrealizedGrossTotal - unrealizedBuyFeeTotal;
+
+    std::ofstream f("performance_report.txt", std::ios::trunc);
+    f << "갱신 시각: " << timestamp() << "\n";
+    f << std::fixed << std::setprecision(2);
+    f << "총 손익: " << krw(totalPnl) << " (초기예치금 " << krw(initialCash) << " 대비 "
+      << pct(totalPnl) << "%)\n";
+
+    f << "\n[실현손익 -- 매도 완료 거래, trades.log 기준]\n";
+    if (grossBySymbol.empty()) {
+        f << "  없음\n";
+    } else {
+        for (auto& [code, gross] : grossBySymbol)
+            f << "  " << nameByCode[code] << "(" << code << ") 가격변동: " << krw(gross)
+              << " (" << pct(gross) << "%)\n";
+    }
+    f << "  매매수수료(매수+매도 합계, 매도가 기준 근사): " << krw(-totalFee) << " (" << pct(-totalFee) << "%)\n";
+    f << "  증권거래세(매도): " << krw(-totalTax) << " (" << pct(-totalTax) << "%)\n";
+
+    f << "\n[미실현손익 -- 보유 중인 포지션 평가손익]\n";
+    if (positionsSnapshot.empty()) {
+        f << "  없음\n";
+    } else {
+        for (auto& [code, pos] : positionsSnapshot) {
+            double gross = (pos.lastKnownPrice - pos.avgBuyPrice) * pos.qty;
+            f << "  " << pos.name << "(" << pos.code << ") 가격변동: " << krw(gross)
+              << " (" << pct(gross) << "%)\n";
+        }
+        f << "  매수수수료(보유 포지션분, 매도 시 매도수수료+거래세 추가 발생 예정): "
+          << krw(-unrealizedBuyFeeTotal) << " (" << pct(-unrealizedBuyFeeTotal) << "%)\n";
+    }
+}
+
 // Rewrites holdings.txt every 5 seconds regardless of poll_seconds, so "what does the
-// bot hold right now" is always answerable by just looking at a file.
-static void statusWriterLoop(SharedState* shared, std::atomic<bool>* stop) {
+// bot hold right now" is always answerable by just looking at a file. Also includes a
+// cash/total-equity/수익률 summary vs initialCash, so the whole account picture (not
+// just positions) is in one file -- initialCash is the config value for mock/sim, and
+// for paper/live it's whatever the user set as their reference starting balance (see
+// initial_cash in README) since KIS has no API to look up the account's original deposit.
+// performance_report.txt (see writePerformanceReport above) is written on the same
+// cadence, breaking that overall 수익률 down into where it actually came from.
+static void statusWriterLoop(SharedState* shared, std::atomic<bool>* stop, double initialCash,
+                              double feeRate) {
     while (!stop->load()) {
+        std::map<std::string, Position> positionsSnapshot;
         {
             std::lock_guard<std::mutex> lock(shared->mtx);
             std::ofstream f("holdings.txt", std::ios::trunc);
             f << "갱신 시각: " << timestamp() << "\n";
+            double stockValue = 0.0;
             if (shared->positions.empty()) {
                 f << "보유 종목 없음 (스캔 중)\n";
             } else {
                 for (auto& [code, pos] : shared->positions) {
                     double pnl = (pos.lastKnownPrice - pos.avgBuyPrice) * pos.qty;
+                    double value = pos.qty * pos.lastKnownPrice;
+                    stockValue += value;
                     f << "---\n";
                     f << "보유 종목: " << pos.name << "(" << pos.code << ")\n";
                     f << "수량: " << pos.qty << "주\n";
                     f << "평단가: " << krw(pos.avgBuyPrice) << "\n";
                     f << "현재가: " << krw(pos.lastKnownPrice) << "\n";
+                    f << "평가금액: " << krw(value) << "\n";
                     f << "평가손익(세전): " << krw(pnl) << "\n";
                 }
             }
+            double totalEquity = shared->cash + stockValue;
+            double profitPct = initialCash > 0 ? (totalEquity - initialCash) / initialCash * 100.0 : 0.0;
+            f << "===\n";
+            f << "남은 예치금: " << krw(shared->cash) << "\n";
+            f << "보유주식 평가금액: " << krw(stockValue) << "\n";
+            f << "총자산: " << krw(totalEquity) << "\n";
+            f << "초기예치금: " << krw(initialCash) << "\n";
+            f << "누적 수익률: " << std::fixed << std::setprecision(2) << profitPct << "%\n";
+            positionsSnapshot = shared->positions;
         }
+        writePerformanceReport(positionsSnapshot, initialCash, feeRate);
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 }
@@ -272,6 +402,18 @@ int main() {
     double dailyLossLimitPct = cfg.value("daily_loss_limit_pct", 0.05);
     // 이 서킷브레이커 자체를 끄고 싶을 때(예: 백테스트/짧은 검증 실행)를 위한 on/off 스위치.
     bool dailyLossLimitEnabled = cfg.value("daily_loss_limit_enabled", true);
+    // ML 모드: 켜면 종목별로 신경망(genann, third_party/genann.h)을 학습시켜 그 종목
+    // 전용 모델로 상승확률을 추정하고, probabilityFromTechnicals(전 종목 공통 휴리스틱)
+    // 자리를 대체함. 꺼두면(기본값) 기존 동작 그대로. 학습은 스캔마다가 아니라 종목별로
+    // ml_retrain_days가 지났을 때만(주기적) 하고, 그 결과를 ml_models/에 저장해 재사용함.
+    bool mlEnabled = cfg.value("ml_enabled", false);
+    int mlRetrainDays = cfg.value("ml_retrain_days", 1);
+    // 재학습 시에만 쓰는 긴 일봉 히스토리(스캔용 짧은 히스토리와 별도 조회) 및 라벨링에
+    // 쓰는 관측 구간(익절/손절 중 먼저 닿는 쪽으로 라벨) -- 둘 다 사용자별로 바뀔 값이
+    // 아니라 config로 안 빼고 여기 상수로 둠(다른 kEventLookaheadDays류와 같은 관례).
+    const int kMlTrainingBars = 100;
+    const int kMlLabelLookaheadDays = 5;
+    MlModelStore mlStore("ml_models");
     std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
         "https://www.mk.co.kr/rss/50200011/",
         "https://www.hankyung.com/feed/economy",
@@ -427,8 +569,16 @@ int main() {
         }
     }
 
+    try {
+        double startCash = client->getBuyableCash();
+        std::lock_guard<std::mutex> lock(shared.mtx);
+        shared.cash = startCash;
+    } catch (const std::exception&) {
+        // best-effort -- holdings.txt shows 0 until the first poll cycle refreshes it below
+    }
+
     std::atomic<bool> stopStatusWriter{false};
-    std::thread statusThread(statusWriterLoop, &shared, &stopStatusWriter);
+    std::thread statusThread(statusWriterLoop, &shared, &stopStatusWriter, initialCash, feeRate);
 
     // Only paper/live actually submit orders to KIS, which rejects everything outside
     // regular hours ("모의투자 장종료 입니다") -- gate on it so a closed market doesn't
@@ -459,6 +609,41 @@ int main() {
             }
         }
         return observed;
+    };
+
+    // Shared by Phase A (held-position monitoring) and Phase B (scan candidates): when ML
+    // mode is on, retrains `code`'s model if it's due (fetches kMlTrainingBars of history --
+    // one extra API call, but only on the rare cycle a retrain is actually due, not every
+    // poll) and predicts with it; falls back to the technical-signal probability whenever ML
+    // is off or this cycle's daily-bar fetch itself failed, but returns -1 when the symbol
+    // simply doesn't have enough trading history to ever train a model (e.g. a recent IPO
+    // like 마키나락스/477850) -- callers treat that as "exclude this symbol" instead of
+    // quietly reusing the technical heuristic ml_enabled was turned on to replace.
+    auto resolveProbability = [&](const std::string& code, const std::string& label,
+                                   const MlFeatures& features, double technicalProbability) -> double {
+        if (!mlEnabled) return technicalProbability;
+        std::string today = timestamp().substr(0, 10);
+        bool insufficientData = false;
+        if (mlStore.needsRetrain(code, mlRetrainDays, today)) {
+            try {
+                auto trainBars = client->getDailyBars(code, kMlTrainingBars);
+                std::this_thread::sleep_for(apiPause);
+                int n = mlStore.train(code, trainBars, takeProfitPct, stopLossPct,
+                                       kMlLabelLookaheadDays, shortPeriod, longPeriod, today);
+                if (n > 0) {
+                    log("  " + label + " ML 모델 재학습 완료 (표본 " + std::to_string(n) + "개)");
+                } else {
+                    log("  " + label + " ML 학습 데이터 부족(표본 부족) -- 매수/로테이션 대상에서 제외");
+                    insufficientData = true;
+                }
+            } catch (const std::exception& e) {
+                log("  " + label + " ML 학습용 일봉 조회 실패: " + e.what());
+            }
+        }
+        double mlProb = mlStore.predict(code, features);
+        if (mlProb >= 0) return mlProb;
+        if (insufficientData) return -1.0; // never trainable so far -- exclude, don't fall back
+        return technicalProbability; // transient fetch failure / not due yet -- fall back as before
     };
 
     // Shared by Phase A (dead-cross/take-profit/stop-loss sells) and Phase B (rotation
@@ -572,12 +757,23 @@ int main() {
                         std::string reason = takeProfitHit ? "익절" : stopLossHit ? "손절" : "데드크로스";
                         sellPosition(p, current, reason);
                     } else {
-                        // 100.0 = "거래량 변화 없음"(vol_inrt 중립값) -- 보유 종목은 거래량순위
-                        // 랭킹 데이터를 다시 조회하지 않으므로(스캔에서 벗어났을 수도 있어서
-                        // 애초에 못 구함) 거래량 급증 신호 없이 매물대/추세만으로 판단.
-                        double probability = probabilityFromTechnicals(100.0, trendPct, belowRatio);
-                        double gain = current * takeProfitPct;
-                        heldEv[p.code] = gain * probability;
+                        // 100.0 = "거래량 변화 없음"(vol_inrt 중립값), dayChangePct도 0.0(중립) --
+                        // 보유 종목은 거래량순위 랭킹 데이터를 다시 조회하지 않으므로(스캔에서
+                        // 벗어났을 수도 있어서 애초에 못 구함) 매물대/추세/SMA모멘텀만 실측값으로 씀.
+                        MlFeatures feat;
+                        feat.trendPct = trendPct;
+                        feat.belowRatio = belowRatio;
+                        feat.volumeSurgePct = 100.0;
+                        feat.smaMomentumVal = smaMomentum(closes, shortPeriod, longPeriod);
+                        feat.dayChangePct = 0.0;
+                        double technicalProbability = probabilityFromTechnicals(100.0, trendPct, belowRatio);
+                        double probability = resolveProbability(p.code, label, feat, technicalProbability);
+                        if (probability < 0) {
+                            log(label + " ML 학습 데이터 부족 -- 로테이션 비교 대상에서 제외 (보유는 유지, 익절/손절/데드크로스는 계속 적용)");
+                        } else {
+                            double gain = current * takeProfitPct;
+                            heldEv[p.code] = gain * probability;
+                        }
                     }
                 } catch (const std::exception& e) {
                     log(label + " 모니터링 실패: " + e.what());
@@ -593,6 +789,7 @@ int main() {
             std::this_thread::sleep_for(apiPause);
             double otherValue = 0.0;
             { std::lock_guard<std::mutex> lock(shared.mtx);
+              shared.cash = buyableCash;
               for (auto& [code, p] : shared.positions) otherValue += p.qty * p.lastKnownPrice; }
             double totalEquity = buyableCash + otherValue;
 
@@ -673,7 +870,15 @@ int main() {
                         // 직접적으로 보여줘서 가장 크게 반영됨(strategy.hpp 참고).
                         double trendPct = bars.empty() ? 0.0 : (c.price - bars.front().close) / bars.front().close;
                         double belowRatio = belowPriceVolumeRatio(bars, c.price);
-                        double probability = probabilityFromTechnicals(c.volumeSurgePct, trendPct, belowRatio);
+                        double technicalProbability = probabilityFromTechnicals(c.volumeSurgePct, trendPct, belowRatio);
+                        MlFeatures feat;
+                        feat.trendPct = trendPct;
+                        feat.belowRatio = belowRatio;
+                        feat.volumeSurgePct = c.volumeSurgePct;
+                        feat.smaMomentumVal = smaMomentum(closes, shortPeriod, longPeriod);
+                        feat.dayChangePct = c.dayChangePct;
+                        double probability = resolveProbability(c.code, label, feat, technicalProbability);
+                        if (probability < 0) continue; // ML 학습 데이터 부족 -- 이번 사이클 매수 후보에서 제외
                         double gain = c.price * takeProfitPct;
 
                         // ① PER + 업종(fundamentals) -- BUY 후보에게만 조회(비용 통제).
@@ -889,6 +1094,7 @@ int main() {
                             evictedThisCycle = true;
                             buyableCash = client->getBuyableCash(); // refreshed post-eviction
                             std::this_thread::sleep_for(apiPause);
+                            { std::lock_guard<std::mutex> lock(shared.mtx); shared.cash = buyableCash; }
                             canAct = true;
                         } else {
                             log("최대 보유 종목수 도달, 신규후보 " + label + " 기댓값(" + std::to_string(cand.ev) +
