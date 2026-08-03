@@ -1,4 +1,20 @@
 {
+  "0039P0": {
+    "lastUpdated": "2026-08-03",
+    "name": "매드업",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
+  "008290": {
+    "lastUpdated": "2026-08-03",
+    "name": "원풍물산",
+    "parentCompany": "",
+    "tags": [
+      "섬유·의류"
+    ]
+  },
   "014940": {
     "lastUpdated": "2026-07-28",
     "name": "오리엔탈정공",
@@ -31,6 +47,14 @@
       "금속"
     ]
   },
+  "066430": {
+    "lastUpdated": "2026-08-03",
+    "name": "아이로보틱스",
+    "parentCompany": "",
+    "tags": [
+      "유통"
+    ]
+  },
   "108860": {
     "lastUpdated": "2026-07-27",
     "name": "셀바스AI",
@@ -55,12 +79,28 @@
       "일반서비스"
     ]
   },
+  "319400": {
+    "lastUpdated": "2026-07-29",
+    "name": "현대무벡스",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
   "347860": {
     "lastUpdated": "2026-07-27",
     "name": "알체라",
     "parentCompany": "",
     "tags": [
       "IT 서비스"
+    ]
+  },
+  "372910": {
+    "lastUpdated": "2026-07-30",
+    "name": "한컴라이프케어",
+    "parentCompany": "",
+    "tags": [
+      "의료·정밀기기"
     ]
   },
   "477850": {
