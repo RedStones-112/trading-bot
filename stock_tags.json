@@ -7,12 +7,36 @@
       "일반서비스"
     ]
   },
+  "004310": {
+    "lastUpdated": "2026-08-06",
+    "name": "현대약품",
+    "parentCompany": "",
+    "tags": [
+      "제약"
+    ]
+  },
   "008290": {
     "lastUpdated": "2026-08-03",
     "name": "원풍물산",
     "parentCompany": "",
     "tags": [
       "섬유·의류"
+    ]
+  },
+  "009830": {
+    "lastUpdated": "2026-08-05",
+    "name": "한화솔루션",
+    "parentCompany": "",
+    "tags": [
+      "화학"
+    ]
+  },
+  "010170": {
+    "lastUpdated": "2026-08-05",
+    "name": "대한광통신",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "014940": {
@@ -31,12 +55,76 @@
       "종이·목재"
     ]
   },
+  "017900": {
+    "lastUpdated": "2026-08-05",
+    "name": "광전자",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "018880": {
+    "lastUpdated": "2026-08-06",
+    "name": "한온시스템",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
+  "024840": {
+    "lastUpdated": "2026-08-06",
+    "name": "KBI메탈",
+    "parentCompany": "",
+    "tags": [
+      "금속"
+    ]
+  },
+  "028670": {
+    "lastUpdated": "2026-08-04",
+    "name": "팬오션",
+    "parentCompany": "",
+    "tags": [
+      "운송·창고"
+    ]
+  },
+  "032820": {
+    "lastUpdated": "2026-08-05",
+    "name": "우리기술",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "033160": {
+    "lastUpdated": "2026-08-05",
+    "name": "엠케이전자",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "041020": {
     "lastUpdated": "2026-07-27",
     "name": "폴라리스오피스",
     "parentCompany": "",
     "tags": [
       "IT 서비스"
+    ]
+  },
+  "046970": {
+    "lastUpdated": "2026-08-05",
+    "name": "우리로",
+    "parentCompany": "",
+    "tags": [
+      "유통"
+    ]
+  },
+  "047040": {
+    "lastUpdated": "2026-08-06",
+    "name": "대우건설",
+    "parentCompany": "",
+    "tags": [
+      "건설"
     ]
   },
   "054540": {
@@ -47,12 +135,68 @@
       "금속"
     ]
   },
+  "065770": {
+    "lastUpdated": "2026-08-05",
+    "name": "CS",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "066430": {
     "lastUpdated": "2026-08-03",
     "name": "아이로보틱스",
     "parentCompany": "",
     "tags": [
       "유통"
+    ]
+  },
+  "069540": {
+    "lastUpdated": "2026-08-05",
+    "name": "빛과전자",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "076610": {
+    "lastUpdated": "2026-08-04",
+    "name": "해성옵틱스",
+    "parentCompany": "",
+    "tags": [
+      "의료·정밀기기"
+    ]
+  },
+  "084650": {
+    "lastUpdated": "2026-08-05",
+    "name": "랩지노믹스",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
+  "088350": {
+    "lastUpdated": "2026-08-06",
+    "name": "한화생명",
+    "parentCompany": "",
+    "tags": [
+      "보험"
+    ]
+  },
+  "090710": {
+    "lastUpdated": "2026-08-05",
+    "name": "휴림로봇",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
+  "092040": {
+    "lastUpdated": "2026-08-04",
+    "name": "아미코젠",
+    "parentCompany": "",
+    "tags": [
+      "음식료·담배"
     ]
   },
   "108860": {
@@ -69,6 +213,38 @@
     "parentCompany": "",
     "tags": [
       "일반서비스"
+    ]
+  },
+  "153890": {
+    "lastUpdated": "2026-08-06",
+    "name": "져스텍",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "215790": {
+    "lastUpdated": "2026-08-05",
+    "name": "이노인스트루먼트",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "225190": {
+    "lastUpdated": "2026-08-05",
+    "name": "LK삼양",
+    "parentCompany": "",
+    "tags": [
+      "의료·정밀기기"
+    ]
+  },
+  "239340": {
+    "lastUpdated": "2026-08-04",
+    "name": "이스트에이드",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
     ]
   },
   "299660": {
@@ -95,12 +271,44 @@
       "IT 서비스"
     ]
   },
+  "356680": {
+    "lastUpdated": "2026-08-05",
+    "name": "엑스게이트",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
+  "365660": {
+    "lastUpdated": "2026-08-06",
+    "name": "레몬헬스케어",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
   "372910": {
     "lastUpdated": "2026-07-30",
     "name": "한컴라이프케어",
     "parentCompany": "",
     "tags": [
       "의료·정밀기기"
+    ]
+  },
+  "388790": {
+    "lastUpdated": "2026-08-05",
+    "name": "라이콤",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "419050": {
+    "lastUpdated": "2026-08-05",
+    "name": "삼기에너지솔루션즈",
+    "parentCompany": "",
+    "tags": [
+      "운송장비·부품"
     ]
   },
   "477850": {
