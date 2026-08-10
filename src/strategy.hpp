@@ -1,6 +1,7 @@
 #pragma once
 #include "broker.hpp"
 #include <algorithm>
+#include <cmath>
 #include <vector>
 #include <numeric>
 #include <stdexcept>
@@ -91,4 +92,75 @@ inline double probabilityFromTechnicals(double volumeSurgePct, double trendPct, 
     double trendTerm = std::clamp(trendPct, -0.2, 0.2) * 0.5;                        // recent-window return
     double volTerm = std::clamp((volumeSurgePct - 100.0) / 100.0, -1.0, 1.0) * 0.1;   // today's volume surge
     return std::clamp(0.5 + profileTerm + trendTerm + volTerm, 0.05, 0.95);
+}
+
+// One confirmed zigzag reversal point (a swing high or swing low), in the order found.
+struct Swing { double price; };
+
+// Classic zigzag: walks `closes` oldest-first and only records a swing once price reverses
+// by `reversalPct` from the running extreme -- filters daily noise into the handful of moves
+// actually large enough to call a "leg". ponytail: the very first leg's direction is
+// undetermined until the first reversalPct move away from closes.front(), so a run that
+// wobbles under that threshold the whole time yields zero swings (caller falls back to
+// neutral) rather than mis-guessing which way the first leg went.
+inline std::vector<Swing> detectSwings(const std::vector<double>& closes, double reversalPct) {
+    std::vector<Swing> swings;
+    if (closes.size() < 2) return swings;
+    bool haveTrend = false, trendUp = false;
+    double extreme = closes.front();
+    for (size_t i = 1; i < closes.size(); i++) {
+        double price = closes[i];
+        if (!haveTrend) {
+            if (price >= extreme * (1.0 + reversalPct)) { haveTrend = true; trendUp = true; swings.push_back({extreme}); extreme = price; }
+            else if (price <= extreme * (1.0 - reversalPct)) { haveTrend = true; trendUp = false; swings.push_back({extreme}); extreme = price; }
+        } else if (trendUp) {
+            if (price > extreme) extreme = price;
+            else if (price <= extreme * (1.0 - reversalPct)) { swings.push_back({extreme}); trendUp = false; extreme = price; }
+        } else {
+            if (price < extreme) extreme = price;
+            else if (price >= extreme * (1.0 + reversalPct)) { swings.push_back({extreme}); trendUp = true; extreme = price; }
+        }
+    }
+    return swings;
+}
+
+// 파동분석(Elliott Wave 계열) 근사치 -- 정식 엘리엇 파동이론은 5-3 파동 문법/파동차수/
+// 파동간 피보나치 길이 비율까지 검증하는 주관적인 기법이라 알고리즘으로 통일된 "정답"이
+// 없음(ponytail: 정식 파동 카운터가 필요해지면 교체, 지금은 그중 계산 가능한 부분만 씀).
+// 여기서는 지그재그로 유의미한 스윙만 추려서 마지막으로 확정된 파동(swing A -> swing B)의
+// 방향을 추세로 보고, 지금 가격이 그 파동을 얼마나 되돌렸는지(피보나치 되돌림 구간)로
+// 판단: A->B가 상승파동이었는데 B를 다시 돌파하면 상승파동(3파 유사) 지속으로 보고 크게
+// 반영, 38.2~61.8% 되돌림이면 건강한 조정(2파/4파 유사)으로 보고 소폭 반영, A를 뚫고
+// 내려가면 파동 구조 자체가 무효화된 것으로 보고 비관적으로 반영. 하락파동은 대칭으로
+// 처리. bars는 오래된 순, currentPrice는 지금 이 순간의 실시간가(아직 확정 스윙에
+// 포함 안 됨).
+inline double probabilityFromWaveAnalysis(const std::vector<DailyBar>& bars, double currentPrice) {
+    std::vector<double> closes;
+    closes.reserve(bars.size());
+    for (auto& bar : bars) closes.push_back(bar.close);
+
+    const double kReversalPct = 0.03; // 3% -- 일봉 노이즈를 걸러내는 임계값, 튜닝 대상
+    auto swings = detectSwings(closes, kReversalPct);
+    if (swings.size() < 2) return 0.5; // 유의미한 파동 구조를 못 찾음 -- 중립
+
+    double a = swings[swings.size() - 2].price; // 마지막으로 확정된 파동의 시작점
+    double b = swings.back().price;              // 마지막으로 확정된 파동의 끝점
+    double legSize = std::fabs(b - a);
+    if (legSize <= 0) return 0.5;
+
+    if (b > a) { // 마지막 확정 파동이 상승
+        if (currentPrice > b) return 0.80; // 직전 고점을 다시 돌파 -- 상승파동 지속(3파 유사)
+        double retracement = (b - currentPrice) / legSize;
+        if (retracement <= 0.382) return 0.65; // 얕은 되돌림 -- 추세 재개 가능성 높음
+        if (retracement <= 0.618) return 0.55; // 피보나치 되돌림 구간 -- 여전히 건강한 조정
+        if (retracement < 1.0) return 0.40;    // 깊은 되돌림 -- 파동 구조가 약해 보임
+        return 0.20;                            // 시작점(A)까지 되돌림 -- 구조 무효화
+    } else { // 마지막 확정 파동이 하락
+        if (currentPrice < b) return 0.20; // 직전 저점을 다시 하회 -- 하락파동 지속
+        double retracement = (currentPrice - b) / legSize;
+        if (retracement <= 0.382) return 0.35;
+        if (retracement <= 0.618) return 0.45;
+        if (retracement < 1.0) return 0.55;
+        return 0.65; // 시작점(A)까지 반등 -- 하락구조 무효화
+    }
 }

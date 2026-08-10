@@ -54,11 +54,14 @@ static void log(const std::string& msg) {
 }
 
 // One line per completed trade -- a clean audit trail separate from the noisy scan log.
+// `reason` (익절/손절/데드크로스/교체매도 for SELL, 매수/추가매수 for BUY) is appended as
+// the last field so older trades.log rows (written before this field existed) still parse.
 static void logTrade(const std::string& side, const std::string& code, const std::string& name,
-                      int qty, double price, double feeRate, double taxRate, double netProfit) {
+                      int qty, double price, double feeRate, double taxRate, double netProfit,
+                      const std::string& reason) {
     std::ofstream f("trades.log", std::ios::app);
     f << timestamp() << "," << side << "," << code << "," << name << "," << qty << ","
-      << price << "," << feeRate << "," << taxRate << "," << netProfit << "\n";
+      << price << "," << feeRate << "," << taxRate << "," << netProfit << "," << reason << "\n";
 }
 
 // Reconstructs today's cumulative realized P&L from trades.log so the daily loss limit
@@ -157,18 +160,32 @@ struct Position {
     std::vector<double> baseCloses; // historical closes for `code`, not including today
     std::vector<DailyBar> baseBars; // historical OHLCV for `code`, not including today -- volume-profile input
     int topUps = 0; // number of buys into this position after the one that opened it
+    // Set when a dead-cross fires on this poll; only actually sells once it's still set on
+    // the *next* poll too. smaCrossSignal recomputes every poll from stored daily bars +
+    // the live tick, so a single noisy tick crossing the boundary would otherwise trigger an
+    // immediate sell -- and since the next poll's live tick can just as easily cross back,
+    // that sell is often followed by an instant re-buy (observed in trades.log: 현대무벡스
+    // round-tripped 179 times in one session, some BUY->SELL pairs 9 seconds apart). 익절/
+    // 손절 skip this debounce entirely -- those protect capital and must act immediately.
+    bool deadCrossPending = false;
 };
 
 struct SharedState {
     std::mutex mtx;
     std::map<std::string, Position> positions; // keyed by code -- multiple concurrent holdings
     double cash = 0.0; // last known buyable cash (매수가능금액), refreshed once per main-loop cycle
+    // When a position is fully closed, the symbol is blocked from a fresh BUY for
+    // rebuy_cooldown_seconds -- without this, the same signal-noise flicker that debounces
+    // dead-cross sells above can still reopen the position next scan the moment the golden
+    // cross flips back (observed pattern: sell, then re-buy within 10-40s, over and over).
+    std::map<std::string, std::chrono::steady_clock::time_point> recentlySold;
 };
 
 // One closed (SELL) trade's price-only gross P&L and transaction cost, reconstructed from
 // a trades.log row for the 손익 attribution report below.
 struct RealizedTrade {
-    std::string code, name;
+    std::string timestamp, code, name, reason;
+    double netProfit = 0.0;
     double grossPnl = 0.0, feeCost = 0.0, taxCost = 0.0;
 };
 
@@ -195,8 +212,11 @@ static std::vector<RealizedTrade> loadRealizedTrades() {
             double taxRate = std::stod(fields[7]);
             double netProfit = std::stod(fields[8]);
             RealizedTrade t;
+            t.timestamp = fields[0];
             t.code = fields[2];
             t.name = fields[3];
+            t.reason = fields.size() >= 10 ? fields[9] : "(사유 미기록)"; // rows logged before this field existed
+            t.netProfit = netProfit;
             t.feeCost = price * feeRate * qty * 2; // both legs, buy leg approximated via sell price
             t.taxCost = price * taxRate * qty;
             t.grossPnl = netProfit + t.feeCost + t.taxCost;
@@ -250,9 +270,15 @@ static void writePerformanceReport(const std::map<std::string, Position>& positi
     if (grossBySymbol.empty()) {
         f << "  없음\n";
     } else {
-        for (auto& [code, gross] : grossBySymbol)
+        for (auto& [code, gross] : grossBySymbol) {
             f << "  " << nameByCode[code] << "(" << code << ") 가격변동: " << krw(gross)
               << " (" << pct(gross) << "%)\n";
+            for (auto& t : realized) {
+                if (t.code != code) continue;
+                f << "    - " << t.timestamp << " 사유:" << t.reason << " 순손익 " << krw(t.netProfit)
+                  << " (" << pct(t.netProfit) << "%)\n";
+            }
+        }
     }
     f << "  매매수수료(매수+매도 합계, 매도가 기준 근사): " << krw(-totalFee) << " (" << pct(-totalFee) << "%)\n";
     f << "  증권거래세(매도): " << krw(-totalTax) << " (" << pct(-totalTax) << "%)\n";
@@ -378,6 +404,11 @@ int main() {
     // ...and never let one symbol's cost basis exceed this fraction of total account value
     // (buyable cash + all positions marked at last known price).
     double maxPositionValueFraction = cfg.value("max_position_value_fraction", 0.5);
+    // A symbol just fully sold can't be freshly bought again for this long -- stops the
+    // sell-then-instant-rebuy loop that max_topups_per_symbol/max_position_value_fraction
+    // don't cover (those only cap top-ups into an already-open position; once a position is
+    // fully closed its counters reset, so nothing else stopped an immediate re-entry).
+    int rebuyCooldownSeconds = cfg.value("rebuy_cooldown_seconds", 300);
     // KIS accepting an order (a valid ODNO) only means it was submitted, not that it
     // matched -- an illiquid stock's market order can sit unfilled indefinitely. After
     // paper/live orders we poll the account's real holdings for up to this long, 2s apart,
@@ -402,11 +433,12 @@ int main() {
     double dailyLossLimitPct = cfg.value("daily_loss_limit_pct", 0.05);
     // 이 서킷브레이커 자체를 끄고 싶을 때(예: 백테스트/짧은 검증 실행)를 위한 on/off 스위치.
     bool dailyLossLimitEnabled = cfg.value("daily_loss_limit_enabled", true);
-    // ML 모드: 켜면 종목별로 신경망(genann, third_party/genann.h)을 학습시켜 그 종목
-    // 전용 모델로 상승확률을 추정하고, probabilityFromTechnicals(전 종목 공통 휴리스틱)
-    // 자리를 대체함. 꺼두면(기본값) 기존 동작 그대로. 학습은 스캔마다가 아니라 종목별로
-    // ml_retrain_days가 지났을 때만(주기적) 하고, 그 결과를 ml_models/에 저장해 재사용함.
-    bool mlEnabled = cfg.value("ml_enabled", false);
+    // 확률 추정 방식 -- "basic"(기본값, probabilityFromTechnicals: 매물대/추세/거래량급증률
+    // 휴리스틱) | "ml"(종목별 신경망 genann, third_party/genann.h -- 학습은 스캔마다가
+    // 아니라 종목별로 ml_retrain_days가 지났을 때만 하고 ml_models/에 저장해 재사용함) |
+    // "wave"(파동분석: strategy.hpp의 probabilityFromWaveAnalysis, 지그재그 스윙+피보나치
+    // 되돌림 근사치). 알아볼 수 없는 값은 "basic"으로 취급.
+    std::string probabilityMode = cfg.value("probability_mode", "basic");
     int mlRetrainDays = cfg.value("ml_retrain_days", 1);
     // 재학습 시에만 쓰는 긴 일봉 히스토리(스캔용 짧은 히스토리와 별도 조회) 및 라벨링에
     // 쓰는 관측 구간(익절/손절 중 먼저 닿는 쪽으로 라벨) -- 둘 다 사용자별로 바뀔 값이
@@ -434,7 +466,7 @@ int main() {
 
     log("starting trading bot: watchlist=" + std::to_string(watchlistSize) + " sma(" +
         std::to_string(shortPeriod) + "," + std::to_string(longPeriod) + ") take_profit=" +
-        std::to_string(takeProfitPct * 100) + "% mode=" + mode);
+        std::to_string(takeProfitPct * 100) + "% mode=" + mode + " probability_mode=" + probabilityMode);
     if (naverClientId.empty() || naverClientSecret.empty())
         log("네이버뉴스 비활성화: naver_client_id/naver_client_secret 미설정");
 
@@ -533,7 +565,8 @@ int main() {
                     ledgerRemove(odno);
                 } else {
                     log("  주문번호 " + odno + " 취소 최종 실패 -- 이미 체결/취소됐을 수 있음, "
-                        "장부에는 남겨두고 다음 실행에서 재시도");
+                        "장부에서 제거(재시도해도 계속 실패할 주문을 매 실행마다 다시 시도하지 않도록)");
+                    ledgerRemove(odno);
                 }
             }
         }
@@ -611,17 +644,20 @@ int main() {
         return observed;
     };
 
-    // Shared by Phase A (held-position monitoring) and Phase B (scan candidates): when ML
-    // mode is on, retrains `code`'s model if it's due (fetches kMlTrainingBars of history --
-    // one extra API call, but only on the rare cycle a retrain is actually due, not every
-    // poll) and predicts with it; falls back to the technical-signal probability whenever ML
-    // is off or this cycle's daily-bar fetch itself failed, but returns -1 when the symbol
-    // simply doesn't have enough trading history to ever train a model (e.g. a recent IPO
-    // like 마키나락스/477850) -- callers treat that as "exclude this symbol" instead of
-    // quietly reusing the technical heuristic ml_enabled was turned on to replace.
+    // Shared by Phase A (held-position monitoring) and Phase B (scan candidates): dispatches
+    // on probabilityMode. "wave" is a pure local computation (no extra API call). "ml"
+    // retrains `code`'s model if it's due (fetches kMlTrainingBars of history -- one extra
+    // API call, but only on the rare cycle a retrain is actually due, not every poll) and
+    // predicts with it; returns -1 when the symbol simply doesn't have enough trading
+    // history to ever train a model (e.g. a recent IPO like 마키나락스/477850) -- callers
+    // treat that as "exclude this symbol" instead of quietly reusing the technical
+    // heuristic ml mode was turned on to replace. Anything else (including "basic") just
+    // returns the technical-signal probability already computed by the caller.
     auto resolveProbability = [&](const std::string& code, const std::string& label,
-                                   const MlFeatures& features, double technicalProbability) -> double {
-        if (!mlEnabled) return technicalProbability;
+                                   const MlFeatures& features, double technicalProbability,
+                                   const std::vector<DailyBar>& bars, double currentPrice) -> double {
+        if (probabilityMode == "wave") return probabilityFromWaveAnalysis(bars, currentPrice);
+        if (probabilityMode != "ml") return technicalProbability;
         std::string today = timestamp().substr(0, 10);
         bool insufficientData = false;
         if (mlStore.needsRetrain(code, mlRetrainDays, today)) {
@@ -692,12 +728,13 @@ int main() {
         log("<<< 매도 체결: " + label + " " + std::to_string(soldQty) + "주 @ " + krw(current) +
             " (주문번호 " + odno + ", 사유 " + reason + ")" + fillNote +
             ", 수수료/세금 차감 순손익 " + krw(netProfit));
-        logTrade("SELL", p.code, p.name, soldQty, current, feeRate, taxRate, netProfit);
+        logTrade("SELL", p.code, p.name, soldQty, current, feeRate, taxRate, netProfit, reason);
         todayRealizedPnl += netProfit;
 
         std::lock_guard<std::mutex> lock(shared.mtx);
         if (soldQty >= p.qty) {
             shared.positions.erase(p.code);
+            shared.recentlySold[p.code] = std::chrono::steady_clock::now();
         } else {
             auto it = shared.positions.find(p.code);
             if (it != shared.positions.end()) it->second.qty = remainingQty;
@@ -753,10 +790,25 @@ int main() {
 
                     bool takeProfitHit = netPct >= takeProfitPct;
                     bool stopLossHit = netPct <= -stopLossPct;
-                    if (sig == Signal::Sell || takeProfitHit || stopLossHit) {
+
+                    // Dead-cross only acts on its second consecutive poll (see
+                    // Position::deadCrossPending) -- 익절/손절 bypass this and fire immediately,
+                    // since those protect capital and shouldn't wait a poll to confirm.
+                    bool deadCrossNow = sig == Signal::Sell;
+                    bool deadCrossConfirmed = false;
+                    { std::lock_guard<std::mutex> lock(shared.mtx);
+                      auto it = shared.positions.find(p.code);
+                      if (it != shared.positions.end()) {
+                          deadCrossConfirmed = deadCrossNow && it->second.deadCrossPending;
+                          it->second.deadCrossPending = deadCrossNow;
+                      } }
+
+                    if (takeProfitHit || stopLossHit || deadCrossConfirmed) {
                         std::string reason = takeProfitHit ? "익절" : stopLossHit ? "손절" : "데드크로스";
                         sellPosition(p, current, reason);
                     } else {
+                        if (deadCrossNow)
+                            log(label + " 데드크로스 감지 -- 다음 poll에서 재확인되면 매도(노이즈성 순간크로스 방지)");
                         // 100.0 = "거래량 변화 없음"(vol_inrt 중립값), dayChangePct도 0.0(중립) --
                         // 보유 종목은 거래량순위 랭킹 데이터를 다시 조회하지 않으므로(스캔에서
                         // 벗어났을 수도 있어서 애초에 못 구함) 매물대/추세/SMA모멘텀만 실측값으로 씀.
@@ -767,7 +819,8 @@ int main() {
                         feat.smaMomentumVal = smaMomentum(closes, shortPeriod, longPeriod);
                         feat.dayChangePct = 0.0;
                         double technicalProbability = probabilityFromTechnicals(100.0, trendPct, belowRatio);
-                        double probability = resolveProbability(p.code, label, feat, technicalProbability);
+                        double probability = resolveProbability(p.code, label, feat, technicalProbability,
+                                                                  p.baseBars, current);
                         if (probability < 0) {
                             log(label + " ML 학습 데이터 부족 -- 로테이션 비교 대상에서 제외 (보유는 유지, 익절/손절/데드크로스는 계속 적용)");
                         } else {
@@ -877,7 +930,8 @@ int main() {
                         feat.volumeSurgePct = c.volumeSurgePct;
                         feat.smaMomentumVal = smaMomentum(closes, shortPeriod, longPeriod);
                         feat.dayChangePct = c.dayChangePct;
-                        double probability = resolveProbability(c.code, label, feat, technicalProbability);
+                        double probability = resolveProbability(c.code, label, feat, technicalProbability,
+                                                                  bars, c.price);
                         if (probability < 0) continue; // ML 학습 데이터 부족 -- 이번 사이클 매수 후보에서 제외
                         double gain = c.price * takeProfitPct;
 
@@ -1055,9 +1109,21 @@ int main() {
 
                     bool alreadyHeld;
                     int positionCount;
+                    bool inCooldown = false;
                     { std::lock_guard<std::mutex> lock(shared.mtx);
                       alreadyHeld = shared.positions.count(cand.code) > 0;
-                      positionCount = (int)shared.positions.size(); }
+                      positionCount = (int)shared.positions.size();
+                      auto soldIt = shared.recentlySold.find(cand.code);
+                      if (soldIt != shared.recentlySold.end()) {
+                          double sinceSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - soldIt->second).count();
+                          inCooldown = sinceSeconds < rebuyCooldownSeconds;
+                      } }
+                    if (!alreadyHeld && inCooldown) {
+                        log("재매수 쿨다운 중: " + label + " (최근 매도 후 " + std::to_string(rebuyCooldownSeconds) +
+                            "초 이내 재진입 금지, 과매매 방지) -- 다음 후보로");
+                        continue;
+                    }
 
                     bool canAct = alreadyHeld || positionCount < maxPositions;
                     if (!canAct) {
@@ -1211,7 +1277,8 @@ int main() {
                         log(">>> " + std::string(toppedUp ? "추가매수" : "매수") + " 체결: " + label + " " +
                             std::to_string(filledQty) + "주 @ " + krw(cand.current) + fillNote + " (주문번호 " +
                             odno + ", 기댓값 " + std::to_string(cand.ev) + ")");
-                        logTrade("BUY", cand.code, cand.name, filledQty, cand.current, feeRate, 0.0, 0.0);
+                        logTrade("BUY", cand.code, cand.name, filledQty, cand.current, feeRate, 0.0, 0.0,
+                                 toppedUp ? "추가매수" : "매수");
                     }
                     acted = true;
                 }

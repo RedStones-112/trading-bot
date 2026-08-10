@@ -36,6 +36,10 @@
   "max_topups_per_symbol": 3,
   // 한 종목의 총 투입액(원가 기준)이 전체 계좌 가치에서 차지할 수 있는 최대 비율
   "max_position_value_fraction": 0.5,
+  // 한 종목이 전량 매도된 후 재매수를 금지하는 시간(초) -- 위 두 상한은 이미 보유 중인
+  // 포지션의 추가매수만 막아서, 매도로 포지션이 완전히 사라지면 카운터가 리셋돼 곧바로
+  // 재매수될 수 있음(과매매/수수료 누수의 주원인이었던 매도-즉시재매수 반복을 막음)
+  "rebuy_cooldown_seconds": 300,
   // paper/live에서 주문 후 실제 체결(잔고 반영)을 확인하는 최대 대기 시간(초),
   // 2초 간격으로 폴링. 이 안에 안 채워지면 미체결로 보고 취소함
   "fill_confirm_timeout_seconds": 10,
@@ -61,11 +65,13 @@
   // 위 일일 손실 한도 서킷브레이커 자체를 켤지 끌지 (false면 daily_loss_limit_pct 무시)
   "daily_loss_limit_enabled": true,
 
-  // 켜면 종목별로 신경망을 학습시켜(third_party/genann) 그 종목 전용 모델로 상승확률을
-  // 추정하고 probabilityFromTechnicals(전 종목 공통 휴리스틱) 자리를 대체함. 꺼두면
-  // 기존 동작 그대로. 가중치는 ml_models/에 저장됨
-  "ml_enabled": false,
-  // 종목별 재학습 주기(일). 스캔마다 재학습하지 않고 이 일수가 지났을 때만 재학습
+  // 확률 추정 방식 -- "basic"(기본값, 매물대/추세/거래량급증률 휴리스틱) |
+  // "ml"(종목별 신경망 genann로 학습한 상승확률, 가중치는 ml_models/에 저장) |
+  // "wave"(파동분석: 지그재그 스윙 + 피보나치 되돌림 근사치, 새 API 호출 없음).
+  // 알아볼 수 없는 값은 "basic"으로 처리됨
+  "probability_mode": "basic",
+  // "ml" 모드 전용: 종목별 재학습 주기(일). 스캔마다 재학습하지 않고 이 일수가 지났을
+  // 때만 재학습
   "ml_retrain_days": 1,
 
   // 스캔용 후보 스크리닝에 쓸 RSS 피드 URL 목록

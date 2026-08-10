@@ -101,6 +101,49 @@ int main() {
         assert(probabilityFromTechnicals(100.0, -0.5, 0.0) == 0.05);
     }
 
+    // detectSwings: zigzag reversal points at a fixed threshold.
+    {
+        // 100 -(+12%)-> 112 -(-13%)-> 97 -(+24%)-> 120: three reversals, each clear of 10%
+        // (kept off the exact boundary so float rounding of the threshold can't flip a compare).
+        std::vector<double> series = {100.0, 112.0, 97.0, 120.0};
+        auto swings = detectSwings(series, 0.10);
+        assert(swings.size() == 3);
+        assert(std::fabs(swings[0].price - 100.0) < 1e-9);
+        assert(std::fabs(swings[1].price - 112.0) < 1e-9);
+        assert(std::fabs(swings[2].price - 97.0) < 1e-9);
+
+        // Wobbles that never clear a 90% reversal from the running extreme -> no swings.
+        std::vector<double> flat = {100.0, 105.0, 95.0, 102.0};
+        assert(detectSwings(flat, 0.90).empty());
+    }
+
+    // probabilityFromWaveAnalysis: last confirmed swing leg sets the trend, currentPrice's
+    // position against it (extension vs. Fibonacci retracement depth) sets the probability.
+    {
+        auto bar = [](double close) { return DailyBar{close, close + 1.0, close - 1.0, 1000.0}; };
+
+        // Too little structure to confirm even one full leg -> neutral.
+        assert(std::fabs(probabilityFromWaveAnalysis({}, 100.0) - 0.5) < 1e-9);
+        std::vector<DailyBar> wobble = {bar(100.0), bar(101.0), bar(99.0), bar(100.0)}; // never clears 3%
+        assert(std::fabs(probabilityFromWaveAnalysis(wobble, 100.0) - 0.5) < 1e-9);
+
+        // Confirmed up-leg 100 -> 110 (bars dip back to 106 to confirm the 110 high).
+        std::vector<DailyBar> upLeg = {bar(100.0), bar(104.0), bar(110.0), bar(106.0)};
+        assert(std::fabs(probabilityFromWaveAnalysis(upLeg, 115.0) - 0.80) < 1e-9); // new high -- impulse continues
+        assert(std::fabs(probabilityFromWaveAnalysis(upLeg, 107.0) - 0.65) < 1e-9); // 30% retrace -- shallow
+        assert(std::fabs(probabilityFromWaveAnalysis(upLeg, 105.0) - 0.55) < 1e-9); // 50% retrace -- fib zone
+        assert(std::fabs(probabilityFromWaveAnalysis(upLeg, 102.0) - 0.40) < 1e-9); // 80% retrace -- weak
+        assert(std::fabs(probabilityFromWaveAnalysis(upLeg, 99.0) - 0.20) < 1e-9);  // past the leg's start -- invalidated
+
+        // Confirmed down-leg 100 -> 90 (bars bounce back to 94 to confirm the 90 low), mirrored.
+        std::vector<DailyBar> downLeg = {bar(100.0), bar(96.0), bar(90.0), bar(94.0)};
+        assert(std::fabs(probabilityFromWaveAnalysis(downLeg, 85.0) - 0.20) < 1e-9);
+        assert(std::fabs(probabilityFromWaveAnalysis(downLeg, 93.0) - 0.35) < 1e-9);
+        assert(std::fabs(probabilityFromWaveAnalysis(downLeg, 95.0) - 0.45) < 1e-9);
+        assert(std::fabs(probabilityFromWaveAnalysis(downLeg, 98.0) - 0.55) < 1e-9);
+        assert(std::fabs(probabilityFromWaveAnalysis(downLeg, 101.0) - 0.65) < 1e-9);
+    }
+
     // NewsCrawler::scoreSentiment: keyword hits only count for headlines mentioning the stock.
     {
         std::vector<NewsItem> news = {
