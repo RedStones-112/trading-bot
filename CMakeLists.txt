@@ -29,3 +29,13 @@ add_executable(test_strategy
     third_party/genann.c
 )
 target_link_libraries(test_strategy PRIVATE winhttp)
+
+# Offline backtest: replays strategy.hpp's signal functions over real historical daily
+# bars (read-only KIS calls, no orders) to validate probability_mode/trend-filter edge
+# without live trial-and-error. See src/backtest.cpp.
+add_executable(backtest
+    src/backtest.cpp
+    src/kis_client.cpp
+    src/http_client.cpp
+)
+target_link_libraries(backtest PRIVATE winhttp)

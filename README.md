@@ -251,6 +251,22 @@ cmake --build build --target test_strategy
 ./build/test_strategy.exe
 ```
 
+## 백테스트
+
+실거래로 며칠 돌려보는 것만으로는 표본이 너무 작아 신호에 진짜 엣지가 있는지 노이즈인지
+구분하기 어려움(2026-08-14 진단, PROGRESS.md 참고) -- `trades.log`에 등장한 종목들의 실제
+KIS 일봉으로 `smaCrossSignal`/추세필터/`probability_mode`(basic·wave)를 과거 시점마다
+재현해서 승률/기댓값을 통계로 보여주는 도구:
+
+```
+cmake --build build --target backtest
+./build/backtest.exe   # 프로젝트 루트(config.json, trades.log가 있는 곳)에서 실행
+```
+
+읽기 전용(`getDailyBars`만 호출, 주문 없음, 계좌 영향 없음). 결과는 콘솔과
+`backtest_report.txt`에 저장됨 -- 신호 자체의 승률/EV, 추세필터 적용 전후 비교, 확률
+추정 모드별 캘리브레이션(확률이 높다고 예측한 그룹이 실제로도 더 자주 이기는지)을 보여줌.
+
 ## 실시간 확인
 
 - 콘솔(및 `trading.log`)에 스캔마다 후보 종목 각각의
@@ -311,8 +327,10 @@ Claude에게 "이 종목들 태그 좀 정리해줘"라고 부탁해도 됨(파�
     코드에 상수로 둔 관측 구간(5거래일) 안에 고가가 먼저 `take_profit_pct`에 닿으면
     1(성공), 저가가 먼저 `stop_loss_pct`에 닿거나 둘 다 안 닿으면 0.
   - **학습 주기**: 종목마다 `ml_retrain_days`(기본 1일)가 지났을 때만 재학습 — 이때만
-    긴 일봉 히스토리(100개)를 별도로 조회함(스캔용 짧은 히스토리와는 별개 API 호출).
-    학습 자체는 로컬 연산이라 API 비용 없음. 가중치는 `ml_models/<코드>.nn`(genann
+    긴 일봉 히스토리(약 3년치, 750봉)를 별도로 조회함(스캔용 짧은 히스토리와는 별개 API
+    호출 — `getDailyBars`가 KIS 응답의 콜당 100봉 상한을 내부적으로 페이지네이션해서
+    넘김, `kis_client.cpp` 참고). 학습 자체는 로컬 연산이라 API 비용 없음. 가중치는
+    `ml_models/<코드>.nn`(genann
     자체 텍스트 포맷)에, 마지막 학습일은 `ml_models/index.json`에 저장 — 재시작해도
     당일 재학습을 반복하지 않음. `.gitignore`에 등록됨(학습 결과물이라 stock_tags.json/
     events.json과 달리 커밋 대상 아님).

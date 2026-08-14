@@ -443,8 +443,18 @@ int main() {
     // 재학습 시에만 쓰는 긴 일봉 히스토리(스캔용 짧은 히스토리와 별도 조회) 및 라벨링에
     // 쓰는 관측 구간(익절/손절 중 먼저 닿는 쪽으로 라벨) -- 둘 다 사용자별로 바뀔 값이
     // 아니라 config로 안 빼고 여기 상수로 둠(다른 kEventLookaheadDays류와 같은 관례).
-    const int kMlTrainingBars = 100;
+    // ~3년치 거래일(코스피/코스닥 연 거래일수 약 245~250일 기준 근사치, 튜닝된 값 아님) --
+    // 종목당 하루 한 번(ml_retrain_days) 재학습할 때만 이만큼 fetch(getDailyBars가
+    // 100봉/콜 한도를 내부에서 페이지네이션으로 넘김, kis_client.cpp 참고). 사용자 요청으로
+    // 100봉 -> 3년치로 확장(2026-08-15) -- 표본이 늘어야 종목별 신경망이 노이즈가 아니라
+    // 진짜 패턴을 배울 여지가 생긴다는 판단.
+    const int kMlTrainingDays = 750;
     const int kMlLabelLookaheadDays = 5;
+    // 골든크로스(smaCrossSignal)만으로는 하락 추세 중 반등도 매수 신호로 잡힘 -- longPeriod
+    // SMA가 이 일수 전보다도 낮으면(추세 자체가 하락) 매수 후보에서 제외(strategy.hpp의
+    // smaTrendNotFalling 참고). 삼기/다스코가 재매수 쿨다운만 지나면 같은 하락 종목에
+    // 반복 진입해 손절되던 패턴을 막기 위해 추가(2026-08-14, PROGRESS.md).
+    const int kTrendFilterLookbackDays = 5;
     MlModelStore mlStore("ml_models");
     std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
         "https://www.mk.co.kr/rss/50200011/",
@@ -646,8 +656,9 @@ int main() {
 
     // Shared by Phase A (held-position monitoring) and Phase B (scan candidates): dispatches
     // on probabilityMode. "wave" is a pure local computation (no extra API call). "ml"
-    // retrains `code`'s model if it's due (fetches kMlTrainingBars of history -- one extra
-    // API call, but only on the rare cycle a retrain is actually due, not every poll) and
+    // retrains `code`'s model if it's due (fetches kMlTrainingDays of history -- several extra
+    // paginated API calls since that's well past getDailyBars' ~100-row-per-call cap, see
+    // kis_client.cpp, but only on the rare cycle a retrain is actually due, not every poll) and
     // predicts with it; returns -1 when the symbol simply doesn't have enough trading
     // history to ever train a model (e.g. a recent IPO like 마키나락스/477850) -- callers
     // treat that as "exclude this symbol" instead of quietly reusing the technical
@@ -662,7 +673,7 @@ int main() {
         bool insufficientData = false;
         if (mlStore.needsRetrain(code, mlRetrainDays, today)) {
             try {
-                auto trainBars = client->getDailyBars(code, kMlTrainingBars);
+                auto trainBars = client->getDailyBars(code, kMlTrainingDays);
                 std::this_thread::sleep_for(apiPause);
                 int n = mlStore.train(code, trainBars, takeProfitPct, stopLossPct,
                                        kMlLabelLookaheadDays, shortPeriod, longPeriod, today);
@@ -913,6 +924,11 @@ int main() {
                     closes.push_back(c.price);
 
                     Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
+                    if (sig == Signal::Buy && !smaTrendNotFalling(closes, longPeriod, kTrendFilterLookbackDays)) {
+                        log("  " + label + " 골든크로스지만 " + std::to_string(longPeriod) +
+                            "일선 자체가 하락 중 -- 매수 후보 제외 (하락추세 반등 오판 방지)");
+                        sig = Signal::Hold;
+                    }
 
                     if (sig == Signal::Buy) {
                         // 기댓값 = 얻을 이득 x 얻을 확률. 뉴스 감성 대신 기술적 신호로 확률

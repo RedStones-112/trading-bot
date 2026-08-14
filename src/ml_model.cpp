@@ -46,15 +46,7 @@ std::vector<std::pair<MlFeatures, double>> buildTrainingSet(
         f.smaMomentumVal = smaMomentum(closes, smaShort, smaLong);
         f.dayChangePct = (i > 0 && bars[i - 1].close > 0) ? (anchor - bars[i - 1].close) / bars[i - 1].close * 100.0 : 0.0;
 
-        double label = 0.0;
-        for (int d = 1; d <= lookaheadDays; d++) {
-            const DailyBar& fut = bars[i + d];
-            bool tpHit = fut.high > 0 && fut.high >= anchor * (1 + takeProfitPct);
-            bool slHit = fut.low > 0 && fut.low <= anchor * (1 - stopLossPct);
-            if (tpHit && slHit) break; // same-day cross both ways -- ambiguous, no clean win
-            if (tpHit) { label = 1.0; break; }
-            if (slHit) break;
-        }
+        double label = resolveTradeOutcome(bars, i, takeProfitPct, stopLossPct, lookaheadDays) == TradeOutcome::Win ? 1.0 : 0.0;
         samples.push_back({f, label});
     }
     return samples;

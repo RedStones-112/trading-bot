@@ -36,6 +36,24 @@ inline Signal smaCrossSignal(const std::vector<double>& closes, int shortPeriod,
     return Signal::Hold;
 }
 
+// True when the longer-period SMA itself isn't declining (today's SMA(period) vs the same
+// SMA `lookback` bars ago) -- a higher-timeframe trend gate layered on top of the raw
+// golden cross. smaCrossSignal alone fires on any 5-day/20-day flip, including a brief
+// bounce inside an ongoing decline; observed in practice as repeated buy-stopLoss-rebuy
+// cycles on the same falling stock even with the rebuy cooldown in place (삼기/다스코,
+// 2026-08-10~14, PROGRESS.md). closes must be oldest-first. Not enough history to check
+// => true (fail-open, same "정보 없음=중립" convention as the other signals here -- doesn't
+// block buys just because a candidate has thin history).
+inline bool smaTrendNotFalling(const std::vector<double>& closes, int period, int lookback) {
+    if ((int)closes.size() < period + lookback) return true;
+    auto sma = [&](int endExclusive) {
+        double sum = std::accumulate(closes.begin() + (endExclusive - period), closes.begin() + endExclusive, 0.0);
+        return sum / period;
+    };
+    int n = (int)closes.size();
+    return sma(n) >= sma(n - lookback);
+}
+
 // Relative gap between short and long SMA (positive = short above long, i.e. bullish).
 // Used to rank multiple Buy-signal candidates against each other -- bigger gap = stronger cross.
 inline double smaMomentum(const std::vector<double>& closes, int shortPeriod, int longPeriod) {
@@ -56,6 +74,30 @@ inline double netProfitPct(double buyPrice, double sellPrice, double feeRate, do
     double buyCost = buyPrice * (1 + feeRate);
     double sellProceeds = sellPrice * (1 - feeRate - taxRate);
     return (sellProceeds - buyCost) / buyCost;
+}
+
+enum class TradeOutcome { Win, Loss, None };
+
+// Walks forward from `bars[anchorIdx]` (the hypothetical entry price) up to `lookaheadDays`
+// bars, and reports which target the price hits first: Win if the high reaches
+// +takeProfitPct before the low reaches -stopLossPct, Loss if the reverse, None if neither
+// happens within the horizon. A day whose high *and* low both cross their targets is
+// ambiguous (can't tell from a daily bar which one the price touched first intraday) --
+// treated as Loss, same conservative "no clean win" call `ml_model.cpp::buildTrainingSet`
+// made when this logic lived there before it was extracted for `tools/backtest.cpp` to
+// reuse too (2026-08-14, so both places agree on what counts as a win instead of drifting).
+inline TradeOutcome resolveTradeOutcome(const std::vector<DailyBar>& bars, int anchorIdx,
+                                         double takeProfitPct, double stopLossPct, int lookaheadDays) {
+    double anchor = bars[anchorIdx].close;
+    for (int d = 1; d <= lookaheadDays && anchorIdx + d < (int)bars.size(); d++) {
+        const DailyBar& fut = bars[anchorIdx + d];
+        bool tpHit = fut.high > 0 && fut.high >= anchor * (1 + takeProfitPct);
+        bool slHit = fut.low > 0 && fut.low <= anchor * (1 - stopLossPct);
+        if (tpHit && slHit) return TradeOutcome::Loss;
+        if (tpHit) return TradeOutcome::Win;
+        if (slHit) return TradeOutcome::Loss;
+    }
+    return TradeOutcome::None;
 }
 
 // Approximates a volume profile from daily bars: what fraction of recent traded volume

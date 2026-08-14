@@ -33,6 +33,25 @@ int main() {
     }
     assert(threw);
 
+    // smaTrendNotFalling: steadily declining closes -> long SMA today is below long SMA
+    // `lookback` bars ago -> false (this is the case that should block a golden-cross buy
+    // that's really just a bounce inside a downtrend, e.g. 삼기/다스코 2026-08-10~14).
+    std::vector<double> declining;
+    for (int i = 0; i < 30; i++) declining.push_back(100.0 - i); // 100, 99, ..., 71
+    assert(!smaTrendNotFalling(declining, 20, 5));
+
+    // Flat/rising closes -> long SMA not falling -> true.
+    std::vector<double> flat(30, 100.0);
+    assert(smaTrendNotFalling(flat, 20, 5));
+    std::vector<double> rising;
+    for (int i = 0; i < 30; i++) rising.push_back(100.0 + i);
+    assert(smaTrendNotFalling(rising, 20, 5));
+
+    // Not enough history to compare -> fail-open (true), same "정보 없음=중립" convention
+    // as the other signals -- doesn't block a buy just because history is thin.
+    std::vector<double> thin(10, 100.0);
+    assert(smaTrendNotFalling(thin, 20, 5));
+
     // MockBroker: never touches the network, returns sane values.
     MockBroker broker(70000.0, /*initialCash=*/10000000.0, /*seed=*/42);
     double price = broker.getCurrentPrice("005930");

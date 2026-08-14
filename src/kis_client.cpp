@@ -23,6 +23,24 @@ std::string dateOffset(int daysAgo) {
     oss << std::put_time(&tmBuf, "%Y%m%d");
     return oss.str();
 }
+
+// `yyyymmdd` minus `daysBack` calendar days, also YYYYMMDD -- used to page
+// inquire-daily-itemchartprice backward past its per-call row cap (see getDailyBars).
+// noon avoids a DST transition nudging the result a day off (not that KST observes DST,
+// but mktime/localtime_s go through the local zone regardless).
+std::string dateBefore(const std::string& yyyymmdd, int daysBack) {
+    std::tm tmBuf{};
+    tmBuf.tm_year = std::stoi(yyyymmdd.substr(0, 4)) - 1900;
+    tmBuf.tm_mon = std::stoi(yyyymmdd.substr(4, 2)) - 1;
+    tmBuf.tm_mday = std::stoi(yyyymmdd.substr(6, 2));
+    tmBuf.tm_hour = 12;
+    std::time_t t = std::mktime(&tmBuf) - (std::time_t)daysBack * 86400;
+    std::tm out;
+    localtime_s(&out, &t);
+    std::ostringstream oss;
+    oss << std::put_time(&out, "%Y%m%d");
+    return oss.str();
+}
 }
 
 KisClient::KisClient(std::string appkey, std::string appsecret,
@@ -156,31 +174,54 @@ Fundamentals KisClient::getFundamentals(const std::string& code) {
 }
 
 std::vector<DailyBar> KisClient::getDailyBars(const std::string& code, int count) {
-    std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code +
-                         "&FID_INPUT_DATE_1=" + dateOffset(count * 2 + 10) +
-                         "&FID_INPUT_DATE_2=" + dateOffset(0) +
-                         "&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=1";
-    auto body = request("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "GET",
-                         "FHKST03010100", query, true);
-    auto j = json::parse(body);
-    std::vector<DailyBar> bars;
-    // stck_hgpr/stck_lwpr/acml_vol confirmed live (2026-07-24) in the same output2 rows as
-    // stck_clpr -- no separate call needed for the volume-profile signal (strategy.hpp).
-    for (auto& row : j.at("output2")) {
-        if (!row.contains("stck_clpr")) continue;
-        std::string s = row.at("stck_clpr").get<std::string>();
-        if (s.empty()) continue;
-        DailyBar b;
-        b.close = std::stod(s);
-        b.high = std::stod(row.value("stck_hgpr", "0"));
-        b.low = std::stod(row.value("stck_lwpr", "0"));
-        b.volume = std::stod(row.value("acml_vol", "0"));
-        bars.push_back(b);
+    // Confirmed live (2026-08-15): inquire-daily-itemchartprice caps output2 at 100 rows no
+    // matter how wide [FID_INPUT_DATE_1, FID_INPUT_DATE_2] is -- a 900-day-wide window still
+    // only returned the most recent 100 trading days. So DATE_1 doesn't extend the result,
+    // only DATE_2 does (by sliding the "most recent" window further back) -- count > ~100
+    // (ML training's multi-year window, see kMlTrainingDays in main.cpp) needs multiple calls,
+    // each one paging DATE_2 back to just before the oldest date the previous call returned.
+    std::vector<DailyBar> all; // built oldest-first as pages accumulate
+    std::string pageEnd = dateOffset(0);
+    bool firstPage = true;
+    const int kMaxPages = 30; // generous safety cap (30*100 = 3000 trading days ~ 12 years) --
+                               // guards against an infinite loop if a malformed response ever
+                               // stopped the date from moving backward; not expected to trigger.
+    for (int page = 0; page < kMaxPages && (int)all.size() < count; page++) {
+        if (!firstPage) std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        firstPage = false;
+
+        std::string query = "FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=" + code +
+                             "&FID_INPUT_DATE_1=" + dateBefore(pageEnd, 200) +
+                             "&FID_INPUT_DATE_2=" + pageEnd +
+                             "&FID_PERIOD_DIV_CODE=D&FID_ORG_ADJ_PRC=1";
+        auto body = request("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "GET",
+                             "FHKST03010100", query, true);
+        auto j = json::parse(body);
+
+        // stck_hgpr/stck_lwpr/acml_vol confirmed live (2026-07-24) in the same output2 rows as
+        // stck_clpr -- no separate call needed for the volume-profile signal (strategy.hpp).
+        // KIS returns most-recent-first within a page.
+        std::vector<DailyBar> pageBars;
+        std::string oldestDateInPage;
+        for (auto& row : j.at("output2")) {
+            if (!row.contains("stck_clpr")) continue;
+            std::string s = row.at("stck_clpr").get<std::string>();
+            if (s.empty()) continue;
+            DailyBar b;
+            b.close = std::stod(s);
+            b.high = std::stod(row.value("stck_hgpr", "0"));
+            b.low = std::stod(row.value("stck_lwpr", "0"));
+            b.volume = std::stod(row.value("acml_vol", "0"));
+            pageBars.push_back(b);
+            oldestDateInPage = row.value("stck_bsop_date", ""); // last row in the loop = oldest (most-recent-first)
+        }
+        if (pageBars.empty() || oldestDateInPage.empty()) break; // no more history before pageEnd
+
+        all.insert(all.begin(), pageBars.rbegin(), pageBars.rend()); // reverse this page to oldest-first, prepend
+        pageEnd = dateBefore(oldestDateInPage, 1); // next page ends the day before this page's oldest bar
     }
-    // KIS returns most-recent-first; SMA/volume-profile both want oldest-first.
-    std::reverse(bars.begin(), bars.end());
-    if ((int)bars.size() > count) bars.erase(bars.begin(), bars.end() - count);
-    return bars;
+    if ((int)all.size() > count) all.erase(all.begin(), all.end() - count);
+    return all;
 }
 
 double KisClient::getBuyableCash() {

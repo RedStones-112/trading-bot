@@ -5,5 +5,6 @@ holdings.txt
 performance_report.txt
 sim_fills.log
 pending_orders.txt
+backtest_report.txt
 ml_models/
 build/
