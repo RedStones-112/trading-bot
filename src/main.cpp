@@ -440,6 +440,35 @@ int main() {
     // 되돌림 근사치). 알아볼 수 없는 값은 "basic"으로 취급.
     std::string probabilityMode = cfg.value("probability_mode", "basic");
     int mlRetrainDays = cfg.value("ml_retrain_days", 1);
+
+    // ====== strategy_mode: "scan"(기본, 위 watchlist/EV 기반 자동 종목선정) | "focus"
+    // (사용자가 고른 종목만 관찰) ====== 알아볼 수 없는 값은 "scan"으로 처리(다른
+    // mode류 필드들과 같은 관례). focus 모드는 거래량순위 스캔/뉴스/EV 계산을 전부
+    // 건너뛰고 focus_symbols만 보므로, 아래 focus_* 필드들은 strategy_mode가 "focus"일
+    // 때만 쓰이고 scan 모드에서는 무시됨 -- 반대로 watchlist_size/sma_short/sma_long/
+    // take_profit_pct/stop_loss_pct/probability_mode/news_feeds 등 위쪽 필드들은
+    // "scan" 전용으로 focus 모드에서는 안 읽힘 (단, max_position_value_fraction/
+    // daily_loss_limit_*/fee_rate/tax_rate/fill_confirm_timeout_seconds/poll_seconds는
+    // 두 모드 공통으로 계속 씀).
+    std::string strategyMode = cfg.value("strategy_mode", "scan");
+    // focus 모드가 관찰할 종목 코드 목록 (6자리 KRX 코드). scan 모드에서는 무시됨.
+    std::vector<std::string> focusSymbols = cfg.value("focus_symbols", std::vector<std::string>{});
+    // 기울기를 볼 이동평균선(주) 기간(주 단위) -- 작을수록 단기 등락에 더 민감하게 반응
+    int focusWeeklyMaWeeks = cfg.value("focus_weekly_ma_weeks", 10);
+    // 신호가 뜰 때마다 종목당 최대 투입액(max_position_value_fraction × 총자산) 중 한
+    // 스텝에 늘리거나 줄이는 비율 -- "점차"를 실제로 여러 스텝에 걸치게 하는 값. 작을수록
+    // 상한까지 도달하는 데 필요한 스텝(트리거) 수가 늘어나서, 완만해지는 추세가 길게
+    // 지속될수록 비중이 계속 따라 늘어남(추세가 짧게 끝나면 상한 전에 그만큼만 매수됨).
+    // 기본 0.05 = 상한까지 스텝 20회(사용자 확인, 2026-08-24 -- 기존 기본값 0.2는 5스텝
+    // 만에 상한을 다 채워버려서 "추세가 오래갈수록 비중도 더 커진다"는 취지와 안 맞았음).
+    double focusScaleStepFraction = cfg.value("focus_scale_step_fraction", 0.05);
+    // 같은 종목에 연속으로 비중 확대/축소하는 사이 최소 간격(초) -- 없으면 poll_seconds
+    // (기본 5초)마다 계속 매매해서 한 사이클 만에 목표 비중까지 가버려 "점차"가 아니게 됨
+    int focusRescaleIntervalSeconds = cfg.value("focus_rescale_interval_seconds", 3600);
+    // 이동평균선(주) 기울기 계산에 필요한 최소 주 수(weeksPeriod+2, 기울기 2개 비교)보다
+    // 넉넉하게 일봉을 받아옴 -- 기본값 기준 70일이라 100봉/콜 한도(kis_client.cpp) 아래라
+    // 페이지네이션 없이 단일 호출로 끝남.
+    int focusHistoryDays = (focusWeeklyMaWeeks + 4) * 5;
     // 재학습 시에만 쓰는 긴 일봉 히스토리(스캔용 짧은 히스토리와 별도 조회) 및 라벨링에
     // 쓰는 관측 구간(익절/손절 중 먼저 닿는 쪽으로 라벨) -- 둘 다 사용자별로 바뀔 값이
     // 아니라 config로 안 빼고 여기 상수로 둠(다른 kEventLookaheadDays류와 같은 관례).
@@ -474,11 +503,18 @@ int main() {
     auto eventCalendar = loadEventCalendar("events.json");
     log("이벤트 캘린더 " + std::to_string(eventCalendar.size()) + "건 로드");
 
-    log("starting trading bot: watchlist=" + std::to_string(watchlistSize) + " sma(" +
-        std::to_string(shortPeriod) + "," + std::to_string(longPeriod) + ") take_profit=" +
-        std::to_string(takeProfitPct * 100) + "% mode=" + mode + " probability_mode=" + probabilityMode);
-    if (naverClientId.empty() || naverClientSecret.empty())
-        log("네이버뉴스 비활성화: naver_client_id/naver_client_secret 미설정");
+    if (strategyMode == "focus") {
+        std::string symList;
+        for (auto& s : focusSymbols) symList += (symList.empty() ? "" : ",") + s;
+        log("starting trading bot: mode=" + mode + " strategy_mode=focus 종목=[" + symList +
+            "] 이평(주" + std::to_string(focusWeeklyMaWeeks) + ") 기울기 기반 비중조절");
+    } else {
+        log("starting trading bot: watchlist=" + std::to_string(watchlistSize) + " sma(" +
+            std::to_string(shortPeriod) + "," + std::to_string(longPeriod) + ") take_profit=" +
+            std::to_string(takeProfitPct * 100) + "% mode=" + mode + " probability_mode=" + probabilityMode);
+        if (naverClientId.empty() || naverClientSecret.empty())
+            log("네이버뉴스 비활성화: naver_client_id/naver_client_secret 미설정");
+    }
 
     try {
         client->authenticate();
@@ -693,24 +729,29 @@ int main() {
         return technicalProbability; // transient fetch failure / not due yet -- fall back as before
     };
 
-    // Shared by Phase A (dead-cross/take-profit/stop-loss sells) and Phase B (rotation
-    // evictions) -- places the sell order, confirms the fill (paper/live), logs it, and
-    // updates/removes the position + frees cash for whatever Phase B decides to do next.
-    auto sellPosition = [&](const Position& p, double current, const std::string& reason) {
-        auto odno = client->placeMarketOrder(p.code, IBroker::Side::Sell, p.qty, feeRate, taxRate);
+    // Shared by Phase A (dead-cross/take-profit/stop-loss sells), Phase B (rotation
+    // evictions), and focus mode's scale-out -- places the sell order, confirms the fill
+    // (paper/live), logs it, and updates/removes the position + frees cash for whatever
+    // runs next. `sellQty` defaults to the whole position (Phase A/B always fully exit);
+    // focus mode passes a smaller qty to scale a position down gradually instead of
+    // liquidating it in one shot.
+    auto sellPosition = [&](const Position& p, double current, const std::string& reason, int sellQty = -1) {
+        int qtyToSell = sellQty < 0 ? p.qty : sellQty;
+        auto odno = client->placeMarketOrder(p.code, IBroker::Side::Sell, qtyToSell, feeRate, taxRate);
         std::string label = p.name + "(" + p.code + ")";
         bool tracked = (mode == "paper" || mode == "live");
         if (tracked) ledgerAppend(odno);
 
-        int remainingQty = 0; // mock/sim: synchronous, always fully filled
+        int targetRemaining = p.qty - qtyToSell; // 0 for a full exit, >0 for a partial scale-out
+        int remainingQty = targetRemaining; // mock/sim: synchronous, always fully filled
         if (tracked) {
-            int observed = pollForQty(p.code, 0, fillConfirmTimeoutSeconds);
-            remainingQty = observed < 0 ? p.qty : observed; // couldn't confirm -> assume unsold
+            int observed = pollForQty(p.code, targetRemaining, fillConfirmTimeoutSeconds);
+            remainingQty = observed < 0 ? p.qty : observed; // couldn't confirm -> assume nothing sold
         }
         int soldQty = p.qty - remainingQty;
 
         if (tracked) {
-            if (remainingQty > 0) {
+            if (remainingQty > targetRemaining) {
                 // Anything still unfilled after the confirmation window doesn't get left
                 // dangling -- cancel it now rather than letting it sit and maybe fill
                 // asynchronously later, invisibly to whatever the bot decides next.
@@ -726,7 +767,7 @@ int main() {
         }
 
         if (soldQty <= 0) {
-            log("매도 미체결: " + label + " " + std::to_string(p.qty) + "주 주문했으나 " +
+            log("매도 미체결: " + label + " " + std::to_string(qtyToSell) + "주 주문했으나 " +
                 std::to_string(fillConfirmTimeoutSeconds) + "초 내 체결 확인 안 됨 (주문번호 " + odno +
                 "), 포지션 유지 -- 다음 poll에서 다시 판단");
             return;
@@ -734,8 +775,8 @@ int main() {
 
         double netPct = netProfitPct(p.avgBuyPrice, current, feeRate, taxRate);
         double netProfit = netPct * p.avgBuyPrice * soldQty;
-        std::string fillNote = soldQty < p.qty
-            ? " (부분체결 " + std::to_string(soldQty) + "/" + std::to_string(p.qty) + "주)" : "";
+        std::string fillNote = soldQty < qtyToSell
+            ? " (부분체결 " + std::to_string(soldQty) + "/" + std::to_string(qtyToSell) + "주)" : "";
         log("<<< 매도 체결: " + label + " " + std::to_string(soldQty) + "주 @ " + krw(current) +
             " (주문번호 " + odno + ", 사유 " + reason + ")" + fillNote +
             ", 수수료/세금 차감 순손익 " + krw(netProfit));
@@ -743,7 +784,7 @@ int main() {
         todayRealizedPnl += netProfit;
 
         std::lock_guard<std::mutex> lock(shared.mtx);
-        if (soldQty >= p.qty) {
+        if (remainingQty <= 0) {
             shared.positions.erase(p.code);
             shared.recentlySold[p.code] = std::chrono::steady_clock::now();
         } else {
@@ -752,12 +793,178 @@ int main() {
         }
     };
 
+    // focus 모드 전용 매수 헬퍼(Phase B의 매수 코드는 topUps/밸류에이션 부기까지 같이
+    // 하므로 그대로 재사용하지 않고 따로 둠) -- 주문/체결확인/장부 처리는 Phase B와 동일한
+    // 패턴, 포지션 갱신만 단순화(가중평균 평단가만 유지).
+    auto buyIntoPosition = [&](const std::string& code, const std::string& name, double current,
+                               int qty, const std::string& reason) {
+        auto odno = client->placeMarketOrder(code, IBroker::Side::Buy, qty, feeRate, taxRate);
+        std::string label = name + "(" + code + ")";
+        bool tracked = (mode == "paper" || mode == "live");
+        if (tracked) ledgerAppend(odno);
+
+        int filledQty = qty; // mock/sim: synchronous, always fully filled
+        if (tracked) {
+            int priorQty = 0;
+            { std::lock_guard<std::mutex> lock(shared.mtx);
+              auto it = shared.positions.find(code);
+              if (it != shared.positions.end()) priorQty = it->second.qty; }
+            int observed = pollForQty(code, priorQty + qty, fillConfirmTimeoutSeconds);
+            filledQty = observed < 0 ? 0 : std::max(0, observed - priorQty);
+        }
+
+        if (tracked) {
+            if (filledQty < qty) {
+                try {
+                    client->cancelOrder(odno);
+                    ledgerRemove(odno);
+                } catch (const std::exception& e) {
+                    log("  " + label + " 잔여 미체결분 취소 실패(다음 실행에서 재시도): " + e.what());
+                }
+            } else {
+                ledgerRemove(odno);
+            }
+        }
+
+        if (filledQty < 1) {
+            log("매수 미체결: " + label + " " + std::to_string(qty) + "주 주문했으나 " +
+                std::to_string(fillConfirmTimeoutSeconds) + "초 내 체결 확인 안 됨 (주문번호 " + odno + ")");
+            return;
+        }
+
+        bool toppedUp = false;
+        {
+            std::lock_guard<std::mutex> lock(shared.mtx);
+            auto& p = shared.positions[code];
+            if (p.qty > 0) {
+                p.avgBuyPrice = (p.avgBuyPrice * p.qty + current * filledQty) / (p.qty + filledQty);
+                p.qty += filledQty;
+                toppedUp = true;
+            } else {
+                p.code = code;
+                p.name = name;
+                p.qty = filledQty;
+                p.avgBuyPrice = current;
+            }
+            p.lastKnownPrice = current;
+        }
+        std::string fillNote = filledQty < qty
+            ? " (부분체결 " + std::to_string(filledQty) + "/" + std::to_string(qty) + "주)" : "";
+        log(">>> " + std::string(toppedUp ? "비중확대" : "매수") + " 체결: " + label + " " +
+            std::to_string(filledQty) + "주 @ " + krw(current) + fillNote + " (주문번호 " + odno +
+            ", 사유 " + reason + ")");
+        logTrade("BUY", code, name, filledQty, current, feeRate, 0.0, 0.0, reason);
+    };
+
+    // focus 모드: 같은 종목에 연속으로 비중을 조정하는 사이 focus_rescale_interval_seconds
+    // 만큼 간격을 두기 위한 마지막 조정 시각 기록 -- 메인 루프가 단일 스레드라 SharedState에
+    // 안 넣고 로컬 변수로 충분함(scan 모드의 recentlySold와 같은 발상, 다만 그건 여러
+    // 스레드가 읽는 holdings.txt 리포트와 무관해서 굳이 shared에 안 넣음).
+    std::map<std::string, std::chrono::steady_clock::time_point> lastFocusScale;
+
     while (true) {
         try {
             rolloverIfNewDay();
 
             if (needsMarketHours && !isMarketOpen()) {
                 log("정규장 시간(평일 09:00~15:30) 외 -- 스캔 건너뜀");
+                std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
+                continue;
+            }
+
+            // strategy_mode: "focus" -- 거래량순위 스캔/EV 계산/골든크로스를 전부 건너뛰고
+            // focus_symbols만 이동평균선(주) 기울기 모양으로 비중을 점진적으로 조절함.
+            // Phase A/B(아래)는 scan 모드 전용이라 이 분기가 그 자리를 대신함.
+            if (strategyMode == "focus") {
+                double buyableCash = client->getBuyableCash();
+                std::this_thread::sleep_for(apiPause);
+                double positionsValue = 0.0;
+                { std::lock_guard<std::mutex> lock(shared.mtx);
+                  shared.cash = buyableCash;
+                  for (auto& [code, p] : shared.positions) positionsValue += p.qty * p.lastKnownPrice; }
+                double totalEquity = buyableCash + positionsValue;
+
+                // scan 모드와 같은 서킷브레이커 -- 신호원(골든크로스 vs 이평 기울기)이
+                // 달라도 "오늘 이미 크게 잃었으면 신규 리스크를 안 늘린다"는 계좌 차원
+                // 안전장치는 모드와 무관하게 동일하게 적용.
+                bool lossLimitHit = dailyLossLimitEnabled && todayRealizedPnl <= -dailyLossLimitPct * totalEquity;
+                bool newRiskAllowed = !lossLimitHit;
+                if (lossLimitHit)
+                    log("일일 손실 한도 도달 (오늘 실현손익 " + krw(todayRealizedPnl) + ", 한도 -" +
+                        krw(dailyLossLimitPct * totalEquity) + ") -- 오늘은 비중확대 중단, 비중축소는 계속");
+
+                for (auto& code : focusSymbols) {
+                    std::string name = code;
+                    try {
+                        name = client->getStockName(code);
+                        std::this_thread::sleep_for(apiPause);
+                        double current = client->getCurrentPrice(code);
+                        std::this_thread::sleep_for(apiPause);
+                        auto bars = client->getDailyBars(code, focusHistoryDays);
+                        std::this_thread::sleep_for(apiPause);
+                        std::vector<double> closes;
+                        closes.reserve(bars.size());
+                        for (auto& bar : bars) closes.push_back(bar.close);
+
+                        auto weeklyMa = weeklySmaSeries(closes, focusWeeklyMaWeeks);
+                        FocusAction action = focusWeeklySlopeSignal(weeklyMa);
+                        std::string label = name + "(" + code + ")";
+
+                        Position existing;
+                        bool existed;
+                        { std::lock_guard<std::mutex> lock(shared.mtx);
+                          auto it = shared.positions.find(code);
+                          existed = it != shared.positions.end();
+                          if (existed) { existing = it->second; it->second.lastKnownPrice = current; } }
+
+                        std::string actionStr = action == FocusAction::ScaleIn ? "비중확대신호" :
+                                                 action == FocusAction::ScaleOut ? "비중축소신호" : "HOLD";
+                        log(label + " 현재가=" + krw(current) + " 이평(주" + std::to_string(focusWeeklyMaWeeks) +
+                            ") 기울기신호=" + actionStr + (existed ? (" 보유=" + std::to_string(existing.qty) + "주") : " 미보유"));
+
+                        if (action == FocusAction::Hold) continue;
+                        if (action == FocusAction::ScaleIn && !newRiskAllowed) continue; // 손실한도 -- 비중축소만 허용
+
+                        auto lastIt = lastFocusScale.find(code);
+                        if (lastIt != lastFocusScale.end()) {
+                            double sinceSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                std::chrono::steady_clock::now() - lastIt->second).count();
+                            if (sinceSeconds < focusRescaleIntervalSeconds) continue; // 아직 재조정 간격 안 지남
+                        }
+
+                        double maxPositionValue = maxPositionValueFraction * totalEquity;
+                        double stepValue = focusScaleStepFraction * maxPositionValue;
+
+                        if (action == FocusAction::ScaleIn) {
+                            double currentValue = existed ? existing.avgBuyPrice * existing.qty : 0.0;
+                            double room = maxPositionValue - currentValue;
+                            if (room <= 0) continue; // 이미 목표 비중 도달
+                            double unitCost = current * (1 + feeRate);
+                            int buyQty = (int)std::floor(std::min(stepValue, room) / unitCost);
+                            if (buyQty < 1 && buyableCash >= unitCost && room >= unitCost) buyQty = 1;
+                            if (buyQty < 1) {
+                                log("  " + label + " 비중확대 신호이나 목표 비중에 근접(여유 " + krw(room) +
+                                    ") -- 이번 스텝 건너뜀");
+                                continue;
+                            }
+                            if (buyableCash < unitCost * buyQty) {
+                                log("  " + label + " 비중확대 신호이나 매수가능금액 부족 -- 건너뜀");
+                                continue;
+                            }
+                            buyIntoPosition(code, name, current, buyQty, "비중확대");
+                            buyableCash -= unitCost * buyQty; // 이번 사이클 내 다른 focus 종목 매수와 겹치지 않게 근사 차감
+                            lastFocusScale[code] = std::chrono::steady_clock::now();
+                        } else { // ScaleOut
+                            if (!existed || existing.qty < 1) continue; // 줄일 보유분 자체가 없음
+                            int sellQty = std::clamp((int)std::floor(stepValue / current), 1, existing.qty);
+                            sellPosition(existing, current, "비중축소", sellQty);
+                            lastFocusScale[code] = std::chrono::steady_clock::now();
+                        }
+                    } catch (const std::exception& e) {
+                        log(name + "(" + code + ") focus 모드 처리 실패: " + e.what());
+                    }
+                }
+
                 std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
                 continue;
             }

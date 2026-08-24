@@ -206,3 +206,47 @@ inline double probabilityFromWaveAnalysis(const std::vector<DailyBar>& bars, dou
         return 0.65; // 시작점(A)까지 반등 -- 하락구조 무효화
     }
 }
+
+// Resamples daily closes (oldest-first) into one close per `daysPerWeek` trading days (the
+// last daily close in each block -- lines up with how a KRX weekly candle's close forms),
+// then returns a `weeksPeriod`-week SMA over those weekly closes, oldest-first. KIS has no
+// weekly-bar endpoint this bot already calls, and this tracks a real weekly chart's shape
+// closely enough for a slope read without a separate API call (ponytail: swap for KIS's
+// 주봉 endpoint if this ever needs to match a published weekly chart exactly). Returns an
+// empty vector if there isn't at least `weeksPeriod` weeks of data yet.
+inline std::vector<double> weeklySmaSeries(const std::vector<double>& dailyCloses, int weeksPeriod, int daysPerWeek = 5) {
+    std::vector<double> weeklyCloses;
+    for (size_t i = daysPerWeek - 1; i < dailyCloses.size(); i += daysPerWeek)
+        weeklyCloses.push_back(dailyCloses[i]);
+
+    std::vector<double> result;
+    if ((int)weeklyCloses.size() < weeksPeriod) return result;
+    double sum = 0.0;
+    for (int i = 0; i < weeksPeriod; i++) sum += weeklyCloses[i];
+    result.push_back(sum / weeksPeriod);
+    for (size_t i = weeksPeriod; i < weeklyCloses.size(); i++) {
+        sum += weeklyCloses[i] - weeklyCloses[i - weeksPeriod];
+        result.push_back(sum / weeksPeriod);
+    }
+    return result;
+}
+
+// "focus" 모드(사용자가 직접 지정한 종목만 관찰하는 모드) 전용 시그널 -- 골든/데드크로스
+// 대신 이동평균선(주)의 기울기 "모양"을 봄. curvature = 이번 구간 기울기 - 직전 구간
+// 기울기(양수면 기울기가 위로 휘어짐, 즉 하락폭이 줄거나 상승폭이 줄어드는 방향). 아직
+// 하락 중(slope<0)인데 curvature>0(하락폭이 줄어들며 완만해지는 중)이면 비중 확대,
+// 아직 상승 중(slope>0)인데 curvature<0(상승폭이 줄어들며 완만해지는 중)이면 비중 축소.
+// 같은 방향으로 더 가팔라지는 중이거나(구조상 아직 바닥/천장 신호가 아님) 데이터 부족
+// (weeklySmaSeries가 3개 미만을 돌려줌)이면 Hold.
+enum class FocusAction { ScaleIn, ScaleOut, Hold };
+
+inline FocusAction focusWeeklySlopeSignal(const std::vector<double>& weeklyMa) {
+    if (weeklyMa.size() < 3) return FocusAction::Hold;
+    size_t n = weeklyMa.size();
+    double slopeNow = weeklyMa[n - 1] - weeklyMa[n - 2];
+    double slopePrev = weeklyMa[n - 2] - weeklyMa[n - 3];
+    double curvature = slopeNow - slopePrev;
+    if (slopeNow < 0 && curvature > 0) return FocusAction::ScaleIn;
+    if (slopeNow > 0 && curvature < 0) return FocusAction::ScaleOut;
+    return FocusAction::Hold;
+}

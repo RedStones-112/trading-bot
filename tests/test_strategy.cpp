@@ -270,6 +270,34 @@ int main() {
         _rmdir(dir);
     }
 
+    // weeklySmaSeries: 20 daily closes (100..119), weeksPeriod=2, daysPerWeek=5 -> weekly
+    // closes are the last day of each 5-day block (indices 4,9,14,19 = 104,109,114,119),
+    // then a 2-week SMA over those.
+    {
+        std::vector<double> dailyCloses;
+        for (int i = 0; i < 20; i++) dailyCloses.push_back(100.0 + i);
+        auto weeklyMa = weeklySmaSeries(dailyCloses, 2, 5);
+        assert(weeklyMa.size() == 3);
+        assert(std::fabs(weeklyMa[0] - 106.5) < 1e-9);
+        assert(std::fabs(weeklyMa[1] - 111.5) < 1e-9);
+        assert(std::fabs(weeklyMa[2] - 116.5) < 1e-9);
+
+        // Fewer than weeksPeriod weeks of data -> empty (not enough history yet).
+        std::vector<double> onlyOneWeek(dailyCloses.begin(), dailyCloses.begin() + 5);
+        assert(weeklySmaSeries(onlyOneWeek, 2, 5).empty());
+    }
+
+    // focusWeeklySlopeSignal ("focus" 모드): 하락 중이지만 하락폭이 줄어드는 중(완만해짐)
+    // -> ScaleIn. 상승 중이지만 상승폭이 줄어드는 중 -> ScaleOut. 같은 방향으로 오히려
+    // 가팔라지는 중이거나 데이터가 부족하면 -> Hold.
+    {
+        assert(focusWeeklySlopeSignal({100.0, 90.0, 85.0}) == FocusAction::ScaleIn);   // -10 -> -5, 완만해짐
+        assert(focusWeeklySlopeSignal({100.0, 110.0, 115.0}) == FocusAction::ScaleOut); // +10 -> +5, 완만해짐
+        assert(focusWeeklySlopeSignal({100.0, 95.0, 85.0}) == FocusAction::Hold);      // -5 -> -10, 오히려 가팔라짐
+        assert(focusWeeklySlopeSignal({100.0, 105.0, 115.0}) == FocusAction::Hold);    // +5 -> +10, 오히려 가팔라짐
+        assert(focusWeeklySlopeSignal({100.0, 100.0}) == FocusAction::Hold);           // 데이터 부족(3개 미만)
+    }
+
     std::cout << "all tests passed\n";
     return 0;
 }

@@ -964,6 +964,112 @@ ponytail: 포트폴리오 시뮬레이션(자금배분/동시보유/로테이션
 - genann 학습은 여전히 매 재학습마다 랜덤 초기화 후 처음부터(온라인 미세조정 아님,
   기존에 알려진 한계 그대로) -- 표본이 늘었다고 이 부분이 달라지진 않음.
 
+## "focus" 투자방식 추가 -- 지정 종목만 관찰, 이동평균선(주) 기울기로 비중 점진 조절 (2026-08-24)
+
+사용자 요청: 기존 scan(거래량순위 자동발굴) 방식과 별개로, 사용자가 직접 지정한
+종목만 관찰하는 "focus" 모드를 추가하고, 그 안에서는 골든/데드크로스가 아니라
+이동평균선(주)의 기울기가 하락하다 완만해지면 비중을 점차 늘리고 상승하다 완만해지면
+점차 줄이는 방식으로 매매하도록 요청. 구현 도중 사용자가 추가로 "설정값이 모드별로
+다르게 들어가야 하니 어떤 모드에 쓰이는지 알기 쉽게 분류/표시해달라" 요청 -- config
+파일 구조 자체를 공통/scan 전용/focus 전용 3개 섹션으로 재편.
+
+### 구현
+- **`weeklySmaSeries`/`focusWeeklySlopeSignal`(`strategy.hpp`, 순수함수)**: KIS에
+  주봉 API가 없어서, 일봉 종가를 5거래일씩 묶어 그 구간 마지막 종가를 "그 주 종가"로
+  근사(주봉 차트와 완전히 같지는 않지만 기울기 판단엔 충분, ponytail 코멘트로 명시)한
+  뒤 그 위에 `focus_weekly_ma_weeks`주 SMA를 구함. curvature = 이번 구간 기울기 -
+  직전 구간 기울기로 정의 -- 하락 중(slope<0)인데 curvature>0(완만해짐)이면
+  `ScaleIn`, 상승 중(slope>0)인데 curvature<0(완만해짐)이면 `ScaleOut`, 그 외(같은
+  방향으로 더 가팔라짐/데이터 부족)는 `Hold`.
+- **`strategy_mode`(config, "scan"|"focus") 신설**: 알아볼 수 없는 값은 "scan"으로
+  처리(다른 mode류 필드들과 같은 관례). `main.cpp` 메인 루프 맨 앞, 정규장 체크
+  직후에 `if (strategyMode == "focus") { ... continue; }` 분기를 넣어서 기존
+  scan 모드(Phase A/B 전체)를 건드리지 않고 완전히 별도 경로로 분리 -- 골든크로스/
+  확률추정/뉴스/밸류에이션/모멘텀/익절/손절/데드크로스/재매수쿨다운/추가매수상한
+  전부 focus 모드에서는 안 쓰임(사용자가 요청한 건 순수 기울기 기반 비중조절뿐이라
+  scan 모드의 다른 안전장치를 그대로 얹지 않음 -- 단, 계좌 차원 서킷브레이커인
+  일일 손실 한도는 신호원과 무관한 안전장치라 focus 모드에도 그대로 적용).
+- **점진적 조절**: 신호가 뜰 때마다 전량 매수/매도하지 않고, 종목당 목표 상한
+  (기존 `max_position_value_fraction` × 총자산 -- scan 모드가 이미 쓰던 필드를
+  그대로 재사용) 중 `focus_scale_step_fraction`만큼씩만 단계적으로 사고 팖. 같은
+  종목을 연달아 조정하는 사이 `focus_rescale_interval_seconds`(기본 1시간) 간격을
+  둬서 -- 이게 없으면 poll_seconds(기본 5초)마다 계속 매매해서 한 사이클 만에 목표
+  비중까지 가버려 "점차"가 아니게 됨. 메인 루프가 단일 스레드라 이 마지막-조정-시각
+  기록은 `SharedState`가 아니라 로컬 `std::map`으로 충분(scan 모드의
+  `recentlySold`와 같은 발상이지만 그건 holdings.txt 리포트 스레드가 읽어야 해서
+  shared에 있는 것과 차이).
+- **`sellPosition` 람다를 부분매도 가능하도록 일반화**: 기존엔 항상 `p.qty` 전량만
+  팔았는데(scan 모드는 항상 전량 청산), focus 모드의 비중축소는 일부만 팔아야 함.
+  `sellQty` 파라미터를 추가(기본값 -1 = 기존처럼 전량)하고, 체결확인 폴링 타겟을
+  `p.qty - qtyToSell`(전량매도면 기존과 동일하게 0)로 일반화 -- 기존 scan 모드
+  호출부(Phase A 익절/손절/데드크로스, Phase B 교체매도)는 인자를 안 바꿔서 동작
+  그대로 유지됨. `buyIntoPosition`은 focus 모드 전용으로 새로 추가(Phase B의 매수
+  코드는 topUps/밸류에이션 부기까지 얽혀있어 그대로 재사용하지 않고, 체결확인/장부
+  처리 패턴만 동일하게 복제).
+- **config 파일 구조 재편(사용자 추가 요청)**: `config.example.json`/`config.json`/
+  `build/config.json` 세 파일 전부 "공통 설정" / "scan 모드 전용" / "focus 모드
+  전용" 3개 섹션으로 재배치(필드 값 자체는 안 바꿈, `config.json`/`build/config.json`의
+  기존 `probability_mode` 드리프트(`wave` vs `basic`, 2026-08-14 발견분)도 그대로
+  보존 -- 이번 작업 범위 아님). `max_position_value_fraction`/`daily_loss_limit_*`
+  처럼 두 모드가 같이 쓰는 필드는 "공통" 섹션에 두고, `watchlist_size`/`sma_short`
+  등 scan 전용, `focus_*` 4개는 focus 전용 섹션에 배치. README.md의 config 표도
+  같은 3분류로 재편하고, "투자 방식(`strategy_mode`)" 절을 새로 추가해 focus 모드의
+  전체 로직을 설명.
+
+### 검증
+- `tests/test_strategy.cpp`에 `weeklySmaSeries`(5일씩 묶은 주봉 종가로 손계산한 값과
+  일치, 데이터 부족 시 빈 벡터) + `focusWeeklySlopeSignal`(하락 후 완만 ->ScaleIn,
+  상승 후 완만->ScaleOut, 같은 방향으로 가팔라짐->Hold 양쪽, 데이터 부족(3개 미만)
+  ->Hold) assert 추가, `test_strategy.exe` 전체 회귀 통과.
+- `cmake --build build` 클린 빌드 통과(`trading_bot`/`test_strategy` 둘 다).
+- mock 모드 격리 드라이런(scratchpad, 실계좌 config 안 건드림, `focus_symbols:
+  ["005930","000660"]`, `focus_weekly_ma_weeks=3`, `focus_rescale_interval_seconds=1`,
+  `poll_seconds=1`)으로 약 40초 실행 -- 로그로 실제 확인:
+  - 신호가 여러 poll 연속으로 뜨는 동안 한 번에 전량이 아니라 여러 스텝(37주→36주→1주)에
+    걸쳐 목표 비중까지 점진적으로 매수되는 것.
+  - 목표 비중(`max_position_value_fraction`)에 근접하면 "목표 비중에 근접" 로그와
+    함께 추가매수를 스스로 멈추는 것.
+  - 신호가 반대로 바뀌자(비중축소) 보유 수량을 여러 스텝(36주→36주→1주)에 걸쳐
+    0까지 정확히 줄이는 것, 순손익이 정상적으로 `trades.log`에 기록되는 것.
+  - 신호가 없는(`Hold`) 종목은 아무 매매도 안 하는 것.
+  - ERROR 없이 전체 실행 완료.
+- 세 config 파일 모두 실제 `json::parse(..., ignore_comments=true)`로 파싱해
+  문법 오류 없음과 기존 값(특히 `config.json`의 실계좌 appkey/appsecret/cano,
+  `probability_mode` 드리프트)이 그대로 보존됐는지 재편 후 직접 확인.
+
+### 알려진 한계 / 다음에 논의할 것
+- focus 모드는 익절/손절/데드크로스 같은 개별 트레이드 단위 안전장치가 전혀 없음 --
+  기울기 신호가 반대로 바뀌기 전까지는 평가손실이 나도 그대로 들고 감(사용자가 순수
+  기울기 기반 조절만 요청해서 이번 범위에서 뺌, 필요하면 추가 요청 필요).
+  `daily_loss_limit_*` 계좌 차원 서킷브레이커만 공통으로 적용됨.
+- `focusRescaleIntervalSeconds`(기본 3600초)/`focusScaleStepFraction`(기본 0.2)/
+  `focusWeeklyMaWeeks`(기본 10)는 추정치일 뿐, 다른 신호들과 마찬가지로 백테스트로
+  튜닝된 값이 아님.
+- 주봉 근사(5거래일 묶음)는 실제 거래소 주봉(월요일 시가~금요일 종가 기준)과 주 경계가
+  안 맞을 수 있음(공휴일 등으로 그 주 실제 거래일수가 5일이 아닐 때) -- 기울기의
+  "모양"을 읽는 데는 충분하지만 정밀한 주봉 차트와 100% 일치하진 않음.
+- focus 모드 포지션은 scan 모드가 쓰는 `baseCloses`/`baseBars`/`topUps`를 안 채움 --
+  같은 종목을 scan 모드에서 먼저 사둔 채로 `strategy_mode`를 focus로 바꾸는 등
+  두 모드를 오가는 시나리오는 검증 범위 밖(대부분 한 계좌는 한 모드로 고정 운영할
+  것으로 가정).
+- 오프라인 백테스트 도구(`backtest.cpp`)는 아직 scan 모드의 신호(`smaCrossSignal`류)만
+  재현함 -- focus 모드의 기울기 신호를 검증하려면 별도 확장이 필요(이번 범위 밖).
+
+### 후속 조정: `focus_scale_step_fraction` 기본값 0.2 -> 0.05 (같은 세션)
+
+사용자가 "그러면 차차 분할매수하는게 아니지 않아?"라고 지적 -- 맞는 지적이었음. 기존
+기본값(0.2)은 신호가 계속 유지돼도 딱 5스텝(기본 `focus_rescale_interval_seconds`=1시간
+기준 5시간)만에 상한(`max_position_value_fraction`)을 다 채우고 멈춰버려서, "완만해지는
+추세가 길게 지속될수록 비중이 계속 늘어난다"는 원래 취지와 안 맞고 "정해진 스텝 수만
+채우고 마는 것"에 가까웠음. AskUserQuestion으로 세 가지 방향(스텝을 더 잘게 쪼개기 vs
+추세 지속기간에 비례해서 상한 자체가 늘어나게 하기 vs 상한을 사실상 없애기) 확인 --
+**상한은 그대로 두고 스텝을 더 잘게 쪼개는 방향**으로 결정. `focus_scale_step_fraction`
+기본값을 0.05(상한까지 스텝 20회)로 낮춤 -- `main.cpp`/`config.example.json`/
+`config.json`/`build/config.json`/`README.md` 전부 갱신(로직 변경 없음, 기본값과 주석만
+수정). 추세가 짧게 끝나면 상한 전에 그만큼만 매수된 채 자연히 멈추는 기존 동작
+(`room <= 0` 체크)은 그대로라 "추세 지속기간에 비례해서 실제 매수량이 갈린다"는 의도가
+스텝 수를 늘리는 것만으로 달성됨(로직 변경 불필요, 기본값 튜닝만으로 해결).
+
 ## 알려진 한계 / 다음에 할 만한 것
 
 - 기댓값의 "확률"은 매물대/추세/거래량급증률을 조합한 휴리스틱일 뿐(2026-07-24부터,
