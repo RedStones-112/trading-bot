@@ -182,7 +182,8 @@ libcurl 등 외부 의존성 없음. JSON은 nlohmann/json 헤더 하나만 vend
    평가손익, 그리고 남은 예치금/보유주식 평가금액/총자산/초기예치금 대비 누적
    수익률까지 파일만 보면 항상 알 수 있음.
 8. **거래 로그**: 매수/매도할 때마다 콘솔+`trading.log`에 사람이 읽는 로그를 남기고,
-   `trades.log`에 `시각,BUY/SELL,코드,종목명,수량,가격,수수료율,세율,순손익` 형태로
+   `trades-YYYY-MM.log`(월별로 파일 분리, 예: `trades-2026-09.log`)에
+   `시각,BUY/SELL,코드,종목명,수량,가격,수수료율,세율,순손익` 형태로
    한 줄씩 남김.
 
 `poll_seconds`마다 반복.
@@ -317,7 +318,7 @@ KIS 일봉으로 `smaCrossSignal`/추세필터/`probability_mode`(basic·wave)�
 
 ```
 cmake --build build --target backtest
-./build/backtest.exe   # 프로젝트 루트(config.json, trades.log가 있는 곳)에서 실행
+./build/backtest.exe   # 프로젝트 루트(config.json, trades-*.log가 있는 곳)에서 실행
 ```
 
 읽기 전용(`getDailyBars`만 호출, 주문 없음, 계좌 영향 없음). 결과는 콘솔과
@@ -344,7 +345,9 @@ cmake --build build --target backtest
   수수료는 매도가 기준으로 근사), 미실현손익은 보유 종목별 평가손익과 이미 낸
   매수수수료를 보여줌. 각 항목은 `initial_cash` 대비 %로도 같이 표시되어 "-35% 중
   OO전자 손절이 몇 %, 수수료가 몇 %" 식으로 바로 읽힘.
-- `trades.log`: 체결마다 한 줄씩, 수수료/세금 반영한 순손익 포함.
+- `trades-YYYY-MM.log`: 체결마다 한 줄씩, 수수료/세금 반영한 순손익 포함. 월별로 파일이
+  나뉨(예: `trades-2026-09.log`) -- 파일명이 문자열로도 시간순 정렬되므로 별도 인덱스 없이
+  `trades-*.log`를 이름순으로 이어붙이면 전체 이력이 됨.
 - 콘솔 한글이 깨지면 터미널 자체가 아니라 프로그램이 `SetConsoleOutputCP(CP_UTF8)`로
   맞춰두니, 그래도 깨지면 터미널 폰트/코드페이지 문제일 가능성이 높음.
 

@@ -7,6 +7,7 @@
 #include "sim_broker.hpp"
 #include "stock_tags.hpp"
 #include "strategy.hpp"
+#include "trade_log.hpp"
 #include "../third_party/json.hpp"
 #include <algorithm>
 #include <fstream>
@@ -59,16 +60,18 @@ static void log(const std::string& msg) {
 static void logTrade(const std::string& side, const std::string& code, const std::string& name,
                       int qty, double price, double feeRate, double taxRate, double netProfit,
                       const std::string& reason) {
-    std::ofstream f("trades.log", std::ios::app);
-    f << timestamp() << "," << side << "," << code << "," << name << "," << qty << ","
+    std::string ts = timestamp();
+    std::ofstream f(tradesLogPath(ts), std::ios::app);
+    f << ts << "," << side << "," << code << "," << name << "," << qty << ","
       << price << "," << feeRate << "," << taxRate << "," << netProfit << "," << reason << "\n";
 }
 
 // Reconstructs today's cumulative realized P&L from trades.log so the daily loss limit
 // survives a restart within the same calendar day (no separate persistence needed --
-// trades.log already has everything, one row per completed trade).
+// trades.log already has everything, one row per completed trade). "today" is always in
+// the current month, so only that month's file needs reading.
 static double loadTodaysRealizedPnl(const std::string& today) {
-    std::ifstream in("trades.log");
+    std::ifstream in(tradesLogPath(today));
     std::string line;
     double sum = 0.0;
     while (std::getline(in, line)) {
@@ -197,32 +200,34 @@ struct RealizedTrade {
 // the attribution report work on trades.log as it already exists, no format change needed.
 static std::vector<RealizedTrade> loadRealizedTrades() {
     std::vector<RealizedTrade> result;
-    std::ifstream in("trades.log");
-    std::string line;
-    while (std::getline(in, line)) {
-        std::stringstream ss(line);
-        std::vector<std::string> fields;
-        std::string field;
-        while (std::getline(ss, field, ',')) fields.push_back(field);
-        if (fields.size() < 9 || fields[1] != "SELL") continue;
-        try {
-            int qty = std::stoi(fields[4]);
-            double price = std::stod(fields[5]);
-            double feeRate = std::stod(fields[6]);
-            double taxRate = std::stod(fields[7]);
-            double netProfit = std::stod(fields[8]);
-            RealizedTrade t;
-            t.timestamp = fields[0];
-            t.code = fields[2];
-            t.name = fields[3];
-            t.reason = fields.size() >= 10 ? fields[9] : "(사유 미기록)"; // rows logged before this field existed
-            t.netProfit = netProfit;
-            t.feeCost = price * feeRate * qty * 2; // both legs, buy leg approximated via sell price
-            t.taxCost = price * taxRate * qty;
-            t.grossPnl = netProfit + t.feeCost + t.taxCost;
-            result.push_back(t);
-        } catch (const std::exception&) {
-            // malformed/partial line -- skip it rather than let one bad row abort the report
+    for (auto& path : allTradesLogPaths()) {
+        std::ifstream in(path);
+        std::string line;
+        while (std::getline(in, line)) {
+            std::stringstream ss(line);
+            std::vector<std::string> fields;
+            std::string field;
+            while (std::getline(ss, field, ',')) fields.push_back(field);
+            if (fields.size() < 9 || fields[1] != "SELL") continue;
+            try {
+                int qty = std::stoi(fields[4]);
+                double price = std::stod(fields[5]);
+                double feeRate = std::stod(fields[6]);
+                double taxRate = std::stod(fields[7]);
+                double netProfit = std::stod(fields[8]);
+                RealizedTrade t;
+                t.timestamp = fields[0];
+                t.code = fields[2];
+                t.name = fields[3];
+                t.reason = fields.size() >= 10 ? fields[9] : "(사유 미기록)"; // rows logged before this field existed
+                t.netProfit = netProfit;
+                t.feeCost = price * feeRate * qty * 2; // both legs, buy leg approximated via sell price
+                t.taxCost = price * taxRate * qty;
+                t.grossPnl = netProfit + t.feeCost + t.taxCost;
+                result.push_back(t);
+            } catch (const std::exception&) {
+                // malformed/partial line -- skip it rather than let one bad row abort the report
+            }
         }
     }
     return result;
@@ -235,8 +240,16 @@ static std::vector<RealizedTrade> loadRealizedTrades() {
 // buy-side fee is already-paid cash, shown separately -- sell-side fee/tax hasn't happened
 // yet). `positionsSnapshot` must be a copy, not a live reference, so this can run without
 // holding shared->mtx while it does trades.log file I/O.
+// `actualTotalEquity` (holdings.txt's cash+positions figure, real KIS balance for paper/live)
+// lets this report call out when `initial_cash` in config doesn't match the account's real
+// starting deposit (paper/live only -- KIS has no API for the original deposit, so config is
+// the only source and can drift, e.g. 2026-08-14's holdings.txt/performance_report.txt
+// mismatch, PROGRESS.md). totalPnl below is computed purely from trades.log + current
+// positions, with no dependence on initialCash, so actualTotalEquity - totalPnl is what
+// initial_cash should have been -- printed here so the correct value is a copy-paste away
+// instead of the user digging up the account's real opening balance by hand.
 static void writePerformanceReport(const std::map<std::string, Position>& positionsSnapshot,
-                                    double initialCash, double feeRate) {
+                                    double initialCash, double feeRate, double actualTotalEquity) {
     auto realized = loadRealizedTrades();
     std::map<std::string, double> grossBySymbol;
     std::map<std::string, std::string> nameByCode;
@@ -266,7 +279,15 @@ static void writePerformanceReport(const std::map<std::string, Position>& positi
     f << "총 손익: " << krw(totalPnl) << " (초기예치금 " << krw(initialCash) << " 대비 "
       << pct(totalPnl) << "%)\n";
 
-    f << "\n[실현손익 -- 매도 완료 거래, trades.log 기준]\n";
+    double impliedInitialCash = actualTotalEquity - totalPnl;
+    if (initialCash > 0 && std::abs(impliedInitialCash - initialCash) / initialCash > 0.005) {
+        f << "주의: 실제 계좌 총자산(" << krw(actualTotalEquity) << ")과 위 총손익을 거꾸로 맞춰보면 "
+             "initial_cash는 " << krw(impliedInitialCash) << "이어야 함 (지금 config.json 값 "
+          << krw(initialCash) << "와 불일치) -- config.json의 initial_cash를 이 값으로 맞추면 "
+             "이 리포트와 holdings.txt의 누적수익률(%)이 정확해짐.\n";
+    }
+
+    f << "\n[실현손익 -- 매도 완료 거래, trades-*.log 기준]\n";
     if (grossBySymbol.empty()) {
         f << "  없음\n";
     } else {
@@ -309,6 +330,7 @@ static void statusWriterLoop(SharedState* shared, std::atomic<bool>* stop, doubl
                               double feeRate) {
     while (!stop->load()) {
         std::map<std::string, Position> positionsSnapshot;
+        double totalEquity = 0.0;
         {
             std::lock_guard<std::mutex> lock(shared->mtx);
             std::ofstream f("holdings.txt", std::ios::trunc);
@@ -330,7 +352,7 @@ static void statusWriterLoop(SharedState* shared, std::atomic<bool>* stop, doubl
                     f << "평가손익(세전): " << krw(pnl) << "\n";
                 }
             }
-            double totalEquity = shared->cash + stockValue;
+            totalEquity = shared->cash + stockValue;
             double profitPct = initialCash > 0 ? (totalEquity - initialCash) / initialCash * 100.0 : 0.0;
             f << "===\n";
             f << "남은 예치금: " << krw(shared->cash) << "\n";
@@ -340,7 +362,7 @@ static void statusWriterLoop(SharedState* shared, std::atomic<bool>* stop, doubl
             f << "누적 수익률: " << std::fixed << std::setprecision(2) << profitPct << "%\n";
             positionsSnapshot = shared->positions;
         }
-        writePerformanceReport(positionsSnapshot, initialCash, feeRate);
+        writePerformanceReport(positionsSnapshot, initialCash, feeRate, totalEquity);
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 }

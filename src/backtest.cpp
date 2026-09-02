@@ -15,6 +15,7 @@
 #include "broker.hpp"
 #include "kis_client.hpp"
 #include "strategy.hpp"
+#include "trade_log.hpp"
 #include "../third_party/json.hpp"
 #include <algorithm>
 #include <chrono>
@@ -42,15 +43,17 @@ struct SignalRecord {
 
 std::set<std::pair<std::string, std::string>> loadSymbolUniverse() {
     std::set<std::pair<std::string, std::string>> symbols; // (code, name)
-    std::ifstream f("trades.log");
-    std::string line;
-    while (std::getline(f, line)) {
-        std::stringstream ss(line);
-        std::vector<std::string> cols;
-        std::string cell;
-        while (std::getline(ss, cell, ',')) cols.push_back(cell);
-        if (cols.size() < 4) continue;
-        symbols.insert({cols[2], cols[3]});
+    for (auto& path : allTradesLogPaths()) {
+        std::ifstream f(path);
+        std::string line;
+        while (std::getline(f, line)) {
+            std::stringstream ss(line);
+            std::vector<std::string> cols;
+            std::string cell;
+            while (std::getline(ss, cell, ',')) cols.push_back(cell);
+            if (cols.size() < 4) continue;
+            symbols.insert({cols[2], cols[3]});
+        }
     }
     return symbols;
 }
@@ -102,7 +105,7 @@ int main() {
 
     auto symbols = loadSymbolUniverse();
     if (symbols.empty()) {
-        std::cerr << "trades.log에서 종목을 못 찾음 -- 프로젝트 루트(trades.log가 있는 곳)에서 실행할 것.\n";
+        std::cerr << "trades-*.log에서 종목을 못 찾음 -- 프로젝트 루트(trades-*.log가 있는 곳)에서 실행할 것.\n";
         return 1;
     }
     std::cout << "종목 유니버스: " << symbols.size() << "개 (trades.log 기준)\n";

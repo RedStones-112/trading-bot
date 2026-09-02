@@ -1070,6 +1070,78 @@ ponytail: 포트폴리오 시뮬레이션(자금배분/동시보유/로테이션
 (`room <= 0` 체크)은 그대로라 "추세 지속기간에 비례해서 실제 매수량이 갈린다"는 의도가
 스텝 수를 늘리는 것만으로 달성됨(로직 변경 불필요, 기본값 튜닝만으로 해결).
 
+## trades.log 월별 분할 + 초기예치금 불일치 자동 진단 + 확대 표본 백테스트 재확인 (2026-09-02)
+
+사용자 요청 두 가지: (1) 거래기록 로그를 시간순으로 정리하고 월 단위로 파일을 나눌 것,
+(2) PROGRESS.md에 정리해둔 미해결 이슈들 처리(빌드는 나중에 -- 마침 `trading_bot.exe`
+(PID 16936)가 `paper` 모드로 실행 중이라 exe가 잠겨 링크가 안 되는 상태, 재빌드는 사용자가
+편한 시점에 하기로 함).
+
+### 1. trades.log -> trades-YYYY-MM.log 월별 분할
+- `src/trade_log.hpp` 신규(`date_util.hpp`와 같은 "작은 순수 헤더 공유" 관례) --
+  `tradesLogPath(날짜)` -> `trades-YYYY-MM.log`, `allTradesLogPaths()` -> 존재하는
+  `trades-*.log`를 파일명 문자열 정렬로 오래된 달부터 나열(파일명 자체가 YYYY-MM이라
+  별도 인덱스 없이 정렬만으로 시간순 보장).
+- `main.cpp`: `logTrade`는 그 시점 달의 파일에 씀. `loadTodaysRealizedPnl`(일일 손실
+  한도 복원용)은 "오늘"이 항상 이번 달 안이므로 이번 달 파일 하나만 읽으면 충분.
+  `loadRealizedTrades`(performance_report.txt 전체 이력 집계용)는 `allTradesLogPaths()`로
+  전체 파일을 이어붙여 읽도록 변경.
+- `backtest.cpp`의 `loadSymbolUniverse`도 동일하게 전체 `trades-*.log`를 읽도록 변경.
+- `.gitignore`: `trades.log` -> `trades-*.log`.
+- 기존 `trades.log`(742줄, 2026-07-23~09-02, 이미 시간순 정렬 확인됨 `sort -c` 통과)를
+  월별로 분할(2026-07: 354줄, 2026-08: 330줄, 2026-09: 58줄, 합계 일치 확인) -- 원본
+  `trades.log`는 삭제하지 않고 그대로 둠(아래 참고).
+- README.md의 `trades.log` 언급들(거래 로그 절, 백테스트 실행 안내, 실시간 확인 절)도
+  `trades-YYYY-MM.log`/`trades-*.log`로 갱신.
+- **미완료**: 코드 변경만 하고 빌드는 아직 안 함(위 사유). 지금 도는 구 바이너리는 여전히
+  cwd 기준 `trades.log`(단일 파일)에 계속 씀 -- 재빌드+재시작 시점에 그 사이 쌓인 분량을
+  다시 분할하고 원본 `trades.log`를 정리할 것(다음 세션 참고).
+
+### 2. holdings.txt vs performance_report.txt 수익률 불일치 자동 진단 추가
+2026-08-14에 발견만 하고 미해결로 남아있던 이슈(두 리포트가 같은 `initial_cash`를
+기준으로 삼는데 15%p나 벌어짐 -- 실제 KIS 계좌 시작 예수금이 config 값과 다른 것으로
+추정만 했었음). `writePerformanceReport`가 계산하는 `totalPnl`이 사실 `initialCash`에
+전혀 의존하지 않는다는 걸 확인함(realizedNet + unrealizedGross - unrealizedBuyFee, 전부
+`trades.log`/현재 포지션에서만 나옴) -- 그러면 `실제 총자산(holdings.txt가 이미 KIS
+잔고조회로 아는 값) - totalPnl = initial_cash가 원래 이랬어야 하는 값`을 역산할 수 있음.
+- `writePerformanceReport`에 `actualTotalEquity` 파라미터 추가(`statusWriterLoop`가
+  이미 계산해둔 `totalEquity`를 그대로 넘김), config의 `initial_cash`와 0.5% 넘게
+  차이나면 "initial_cash는 OOO이어야 함" 줄을 performance_report.txt에 자동으로 찍음.
+  사용자가 실제 계좌 시작 예치금을 수동으로 찾아볼 필요 없이 리포트에서 바로 정답이
+  나오게 됨.
+
+### 3. config.json vs build/config.json 드리프트 재확인 및 동기화
+`diff`로 두 파일 비교(appkey/appsecret/cano 등 민감필드 제외) -- 2026-08-14에 이미 발견해둔
+`probability_mode` 드리프트(`wave` vs `basic`)가 그대로 남아있는 것 확인. 실제 운영 로그가
+root `config.json`(`wave`) 기준으로 도는 것으로 이미 확인된 바 있어(2026-08-14), 그 값이
+의도된 현재 설정이라고 보고 `build/config.json`을 `wave`로 맞춤(재시작 전까지는 이미 메모리에
+로드된 구 프로세스에 영향 없음, 재시작 이후에만 적용).
+
+### 4. 확대 표본으로 백테스트 재실행 (사용자 확인 후 진행 -- 실제 KIS API 레이트리밋을
+`paper` 모드로 도는 라이브 봇과 공유하는 부담이 있어 AskUserQuestion으로 확인 받음)
+`trades.log`의 unique 종목 수가 43개(2026-08-14) -> 61개(2026-09-02)로 늘어서, 코드
+변경이 없는 기존 `build/backtest.exe`(2026-08-24 빌드본, 재빌드 불필요)를 그대로 다시
+실행 -- 신호 표본 77건 -> 114건(추세필터 적용분 21건 -> 23건)으로 확대.
+
+**결과 (둘 다 이전 진단과 같은 방향으로, 더 큰 표본으로 재확인됨)**:
+- **추세 필터(`smaTrendNotFalling`)가 여전히 승률/기댓값을 악화시킴**: 필터 없음
+  112건 승률 35.7%(EV -0.35%/trade) vs 필터 적용 23건 승률 26.1%(EV -1.12%/trade).
+  2026-08-14 결과(32.9% vs 23.8%)와 방향이 완전히 일치하고 표본도 커져서, "노이즈일
+  가능성"이라는 단서를 이번엔 붙이기 어려워짐 -- 필터 유지 여부를 사용자와 논의할 필요.
+- **`probability_mode` 캘리브레이션은 `wave`가 뚜렷하게 맞는 방향, `basic`은 여전히
+  노이즈에 가까움**: `wave` 하위->중위->상위 21.6%->34.2%->51.4%(상위 구간 EV
+  +0.90%/trade로 유일하게 플러스), `basic`은 39.5%->31.6%->36.1%로 순서가 뒤섞임.
+  현재 라이브 설정이 이미 `wave`인 것(2026-08-11부터)이 결과적으로 맞는 선택이었다는
+  근거가 이번에 더 뚜렷해짐.
+- `backtest_report.txt`에 최신 결과 저장됨.
+
+### 다음에 논의할 것 (사용자 결정 필요, 코드로 바로 처리하지 않음)
+- 추세 필터를 이번 결과대로 제거할지, 아니면 다른 lookback 값으로 재튜닝해볼지 -- 두
+  번의 독립적인 백테스트(8/14, 9/2)가 같은 방향을 가리키고 있어 노이즈로 치부하기는
+  어려워 보이지만, 실제 매매 로직을 바꾸는 결정이라 사용자 확인 필요.
+- `wave` 모드 상위 확률 구간(0.65~0.8)만 골라서 진입하는 등 확률 임계값을 두는 방향도
+  이번 결과가 시사하지만, 범위 밖(요청받지 않음).
+
 ## 알려진 한계 / 다음에 할 만한 것
 
 - 기댓값의 "확률"은 매물대/추세/거래량급증률을 조합한 휴리스틱일 뿐(2026-07-24부터,

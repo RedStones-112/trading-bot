@@ -1,6 +1,7 @@
 config.json
 trading.log
 trades.log
+trades-*.log
 holdings.txt
 performance_report.txt
 sim_fills.log
