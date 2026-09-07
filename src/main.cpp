@@ -501,11 +501,6 @@ int main() {
     // 진짜 패턴을 배울 여지가 생긴다는 판단.
     const int kMlTrainingDays = 750;
     const int kMlLabelLookaheadDays = 5;
-    // 골든크로스(smaCrossSignal)만으로는 하락 추세 중 반등도 매수 신호로 잡힘 -- longPeriod
-    // SMA가 이 일수 전보다도 낮으면(추세 자체가 하락) 매수 후보에서 제외(strategy.hpp의
-    // smaTrendNotFalling 참고). 삼기/다스코가 재매수 쿨다운만 지나면 같은 하락 종목에
-    // 반복 진입해 손절되던 패턴을 막기 위해 추가(2026-08-14, PROGRESS.md).
-    const int kTrendFilterLookbackDays = 5;
     MlModelStore mlStore("ml_models");
     std::vector<std::string> newsFeeds = cfg.value("news_feeds", std::vector<std::string>{
         "https://www.mk.co.kr/rss/50200011/",
@@ -1153,11 +1148,6 @@ int main() {
                     closes.push_back(c.price);
 
                     Signal sig = smaCrossSignal(closes, shortPeriod, longPeriod);
-                    if (sig == Signal::Buy && !smaTrendNotFalling(closes, longPeriod, kTrendFilterLookbackDays)) {
-                        log("  " + label + " 골든크로스지만 " + std::to_string(longPeriod) +
-                            "일선 자체가 하락 중 -- 매수 후보 제외 (하락추세 반등 오판 방지)");
-                        sig = Signal::Hold;
-                    }
 
                     if (sig == Signal::Buy) {
                         // 기댓값 = 얻을 이득 x 얻을 확률. 뉴스 감성 대신 기술적 신호로 확률
