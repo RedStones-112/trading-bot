@@ -9,3 +9,6 @@ pending_orders.txt
 backtest_report.txt
 ml_models/
 build/
+scripts/autostart.log
+scripts/claude_daily.log
+scripts/.last_claude_review_date
