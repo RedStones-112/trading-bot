@@ -1,6 +1,9 @@
-# Registers two Windows Task Scheduler tasks:
+# Registers three Windows Task Scheduler tasks:
 #  - TradingBot-AutoStart: at logon + daily at 09:00 -> start_trading_bot.ps1
 #      (starts trading_bot.exe if it's regular market hours 09:00-15:30, no-op otherwise)
+#  - TradingBot-AutoStop: daily at 15:35 -> stop_trading_bot.ps1
+#      (stops trading_bot.exe shortly after regular market hours close, no-op on weekends or
+#       if it isn't running)
 #  - TradingBot-ClaudeDailyReview: at logon + daily at 08:40 -> run_daily_claude_review.ps1
 #      (once a day, only if the bot isn't running, runs headless Claude to analyze/improve/
 #       commit/push fully autonomously)
@@ -11,6 +14,7 @@
 #
 # To remove:
 #   Unregister-ScheduledTask -TaskName "TradingBot-AutoStart" -Confirm:$false
+#   Unregister-ScheduledTask -TaskName "TradingBot-AutoStop" -Confirm:$false
 #   Unregister-ScheduledTask -TaskName "TradingBot-ClaudeDailyReview" -Confirm:$false
 
 $ErrorActionPreference = 'Stop'
@@ -37,6 +41,16 @@ Register-ScheduledTask -TaskName "TradingBot-AutoStart" `
     -Description "Starts trading_bot.exe automatically during regular market hours (weekdays 09:00-15:30)" `
     -Force | Out-Null
 Write-Host "Registered TradingBot-AutoStart"
+
+# --- TradingBot-AutoStop ---
+$actionStop = New-ScheduledTaskAction -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\stop_trading_bot.ps1`""
+$triggerStop = New-ScheduledTaskTrigger -Daily -At 3:35PM
+Register-ScheduledTask -TaskName "TradingBot-AutoStop" `
+    -Action $actionStop -Trigger $triggerStop -Settings $settings `
+    -Description "Stops trading_bot.exe shortly after regular market hours close (weekdays 15:35)" `
+    -Force | Out-Null
+Write-Host "Registered TradingBot-AutoStop"
 
 # --- TradingBot-ClaudeDailyReview ---
 $actionReview = New-ScheduledTaskAction -Execute "powershell.exe" `

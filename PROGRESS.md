@@ -1280,6 +1280,28 @@ PowerShell로 실행하면 정상 동작(인증/일봉조회/리포트 저장까
 trading_bot.exe는 GUI 없는 콘솔 앱이라 창 자체를 아예 안 띄워도 동작에 문제없음. 다음 실행부터 적용
 (로직/기능 변경 없음, 이미 떠 있는 프로세스에는 영향 없음 -- 재시작해야 반영).
 
+## 장 마감 후 자동 종료 추가 (2026-09-08, 인터랙티브 세션)
+
+사용자가 "장 마감됐는데 자동 종료됐는지 확인해달라"고 물어봄 -- 확인해보니 원래 설계상
+`trading_bot.exe`는 정규장(15:30) 이후엔 신규 스캔(Phase B)만 스킵할 뿐 프로세스 자체는
+종료되지 않고 계속 보유종목 모니터링(Phase A)만 하며 떠 있는 게 정상 동작이었음(자동
+종료 로직이 원래 없었음). 사용자가 자동 종료 추가를 요청.
+
+- 신규 `scripts/stop_trading_bot.ps1`: `start_trading_bot.ps1`과 같은 패턴(평일만, 로그는
+  `autostart.log` 공유) -- 평일이면 `trading_bot.exe`를 찾아서 `Stop-Process -Force`.
+  이 프로세스는 SIGINT/콘솔 종료 핸들러가 없어서(코드에 없음, 확인함) 항상 하드킬로
+  종료해왔던 이 프로젝트의 기존 관례(2026-07-23/08-14/09-02 세션들 -- 재시작 시 시작
+  루틴이 미체결 주문 자동 취소 + 보유종목 복원을 하므로 안전) 그대로 따름.
+- `register_scheduled_tasks.ps1`에 `TradingBot-AutoStop`(평일 15:35, 트리거 하나만 -- 로그온
+  트리거는 불필요, 장 마감 후에나 의미 있는 일회성 시각 트리거라서) 등록 추가.
+- 직접 실행해서 검증: 마침 이 세션 시점이 장 마감 이후(17:10)라 스크립트를 바로 돌려서
+  실제로 떠 있던 `trading_bot.exe`(PID 15036, 이 세션에서 앞서 재시작한 것)를 정상 종료하는
+  것까지 확인(`autostart.log`에 `Stopped trading_bot.exe (PID 15036, after market close, 17:10)`).
+- **주의**: `Register-ScheduledTask`는 관리자 권한이 필요해서 이 세션(비관리자 PowerShell)에서는
+  등록을 못 함(기존 두 태스크와 같은 제약, 스크립트 상단 주석에도 명시) -- 사용자가 관리자
+  PowerShell에서 `scripts/register_scheduled_tasks.ps1`을 다시 실행해야 `TradingBot-AutoStop`이
+  실제로 스케줄에 등록됨(기존 두 태스크도 `-Force`라 안전하게 재실행 가능).
+
 ## 알려진 한계 / 다음에 할 만한 것
 
 - **`probability_mode: wave`에 확률 임계값(상위 구간만 진입) 필터 추가 검토** -- 2026-08-14/
