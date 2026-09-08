@@ -50,6 +50,14 @@
       "AI"
     ]
   },
+  "006910": {
+    "lastUpdated": "2026-09-08",
+    "name": "보성파워텍",
+    "parentCompany": "",
+    "tags": [
+      "금속"
+    ]
+  },
   "008290": {
     "lastUpdated": "2026-08-03",
     "name": "원풍물산",
@@ -72,6 +80,14 @@
     "parentCompany": "",
     "tags": [
       "전기·전자"
+    ]
+  },
+  "011790": {
+    "lastUpdated": "2026-09-08",
+    "name": "SKC",
+    "parentCompany": "",
+    "tags": [
+      "화학"
     ]
   },
   "0117P0": {
@@ -106,6 +122,14 @@
       "종이·목재"
     ]
   },
+  "015760": {
+    "lastUpdated": "2026-09-08",
+    "name": "한국전력",
+    "parentCompany": "",
+    "tags": [
+      "전기·가스"
+    ]
+  },
   "017670": {
     "lastUpdated": "2026-08-13",
     "name": "SK텔레콤",
@@ -125,6 +149,14 @@
   "018880": {
     "lastUpdated": "2026-08-06",
     "name": "한온시스템",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
+  "019990": {
+    "lastUpdated": "2026-09-08",
+    "name": "에너토크",
     "parentCompany": "",
     "tags": [
       "기계·장비"
@@ -221,6 +253,14 @@
       "IT 서비스"
     ]
   },
+  "046120": {
+    "lastUpdated": "2026-09-08",
+    "name": "오르비텍",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
   "046970": {
     "lastUpdated": "2026-08-05",
     "name": "우리로",
@@ -243,6 +283,14 @@
     "parentCompany": "",
     "tags": [
       "기계·장비"
+    ]
+  },
+  "049080": {
+    "lastUpdated": "2026-09-08",
+    "name": "기가레인",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "053980": {
@@ -307,6 +355,14 @@
     "parentCompany": "",
     "tags": [
       "의료·정밀기기"
+    ]
+  },
+  "078150": {
+    "lastUpdated": "2026-09-08",
+    "name": "HB테크놀러지",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
     ]
   },
   "084650": {
@@ -439,6 +495,14 @@
       "일반서비스"
     ]
   },
+  "189860": {
+    "lastUpdated": "2026-09-08",
+    "name": "서전기전",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "215790": {
     "lastUpdated": "2026-08-05",
     "name": "이노인스트루먼트",
@@ -541,6 +605,14 @@
     "parentCompany": "",
     "tags": [
       "전기·전자"
+    ]
+  },
+  "418620": {
+    "lastUpdated": "2026-09-08",
+    "name": "E8",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
     ]
   },
   "419050": {
