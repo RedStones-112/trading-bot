@@ -42,7 +42,7 @@ try {
         exit 1
     }
 
-    Start-Process -FilePath $exe -WorkingDirectory $root -WindowStyle Minimized
+    Start-Process -FilePath $exe -WorkingDirectory $root -WindowStyle Hidden
     Write-Log "Started trading_bot.exe (market hours, $($now.ToString('HH:mm')))"
 }
 catch {
