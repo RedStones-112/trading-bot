@@ -31,7 +31,7 @@ $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhen
 
 # --- TradingBot-AutoStart ---
 $actionStart = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\start_trading_bot.ps1`""
+    -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\start_trading_bot.ps1`""
 $triggersStart = @(
     New-ScheduledTaskTrigger -AtLogOn
     New-ScheduledTaskTrigger -Daily -At 9:00AM
@@ -44,7 +44,7 @@ Write-Host "Registered TradingBot-AutoStart"
 
 # --- TradingBot-AutoStop ---
 $actionStop = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\stop_trading_bot.ps1`""
+    -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\stop_trading_bot.ps1`""
 $triggerStop = New-ScheduledTaskTrigger -Daily -At 3:35PM
 Register-ScheduledTask -TaskName "TradingBot-AutoStop" `
     -Action $actionStop -Trigger $triggerStop -Settings $settings `
@@ -54,7 +54,7 @@ Write-Host "Registered TradingBot-AutoStop"
 
 # --- TradingBot-ClaudeDailyReview ---
 $actionReview = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\run_daily_claude_review.ps1`""
+    -Argument "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$root\scripts\run_daily_claude_review.ps1`""
 $triggersReview = @(
     New-ScheduledTaskTrigger -AtLogOn
     New-ScheduledTaskTrigger -Daily -At 8:40AM
