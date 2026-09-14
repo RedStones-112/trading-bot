@@ -1471,6 +1471,40 @@ wave 확률 임계값 필터 후보는 위에서 설명한 대로 아직 "2연�
 버그나 뚜렷한 개선 여지가 없어서(주말 동안 거래 자체가 없었음) "오늘은 변경 없음"으로
 세션을 마침(daily_improvement_prompt.md가 명시적으로 허용하는 경로).
 
+## 스케줄 작업 창 깜빡임 -- 09-11 수정으로도 안 없어진 원인 (2026-09-14)
+
+사용자가 "9시에 트레이딩 봇 켜지면서 화면으로 팝업되는 현상이 여전히 발생한다"고 지적.
+09-11에 `register_scheduled_tasks.ps1`의 세 작업 Action에 `-WindowStyle Hidden`을 추가했었고
+(`Get-ScheduledTask`로 실제 등록된 인자에도 반영되어 있음을 확인), 로그(`autostart.log`)도
+스케줄대로 09:00 정상 실행되고 있어서 스크립트 자체는 문제 없었음 -- 그런데도 깜빡임이 남아있던
+원인은 따로 있었음.
+
+- **원인**: 세 작업 모두 `Principal.LogonType`이 `Interactive`(로그온한 사용자의 실제 데스크톱
+  세션에서 실행). `-WindowStyle Hidden`은 "창을 안 만든다"가 아니라 "만들어진 창을 곧바로
+  숨긴다"는 뜻이라, `conhost.exe`가 콘솔 창을 먼저 생성하고 그 다음 `powershell.exe`가 숨김
+  스타일을 적용하는 사이의 짧은 시차 동안 화면에 순간적으로 보임. 이건 Windows 콘솔 호스트/
+  PowerShell 5.1의 잘 알려진 한계로, `powershell.exe`에 넘기는 인자만으로는 완전히 못 막음
+  (09-11 수정은 "덜 보이게"는 했지만 "안 보이게"는 아니었던 셈).
+- **수정**: 신규 `scripts/run_hidden.vbs` -- `wscript.exe`(콘솔 서브시스템 자체가 없음)로
+  실행되는 VBScript가 `WshShell.Run(cmd, 0, False)`로 PowerShell을 띄우면, 창 생성 자체가
+  처음부터 숨김(SW_HIDE) 요청으로 이루어져서 깜빡일 창이 애초에 안 생김. 자격증명 저장이
+  필요한 로그온 타입 변경(S4U/Password) 대신 이 방식을 택함 -- 지금 구조(Interactive 로그온,
+  비밀번호 미저장) 그대로 유지 가능.
+  `register_scheduled_tasks.ps1`의 세 Action을 `powershell.exe -WindowStyle Hidden ...`에서
+  `wscript.exe //B run_hidden.vbs "<대상 .ps1 경로>"`로 교체.
+- **검증**: 다음날 09:00을 기다리면 그때는 새 세션이라 이번 시도가 실제로 통했는지 아무도
+  실시간으로 확인 못 한 채 또 "여전히 깜빡인다"는 보고만 반복될 수 있다는 사용자 지적으로,
+  스케줄 대신 이 자리에서 바로 검증함 -- Task Scheduler가 9시에 실행할 것과 동일한 launcher
+  명령(`wscript.exe //B run_hidden.vbs start_trading_bot.ps1`)을 이 세션에서 두 차례 직접
+  실행(장외 시간이라 봇 자체는 안 켜지고 "스킵" 로그만 남음, launcher 메커니즘 검증엔 충분)
+  하고 사용자가 화면을 지켜본 결과 **창 깜빡임 없음 확인**(09-08/09-11 두 차례 시도는 전부
+  같은 방식(`-WindowStyle Hidden`을 더 붙이는 것)의 변형이라 재발했었는데, 이번엔 창 생성
+  자체를 없애는 다른 메커니즘이라 실사용(스케줄러의 Interactive 로그온 세션) 조건에서도
+  같게 동작할 것으로 봄). 다만 `register_scheduled_tasks.ps1` 재등록은 관리자 권한이 필요해
+  이 세션(비관리자)에서 직접 못 했고, 사용자가 관리자 PowerShell로 재실행해서 세 작업을
+  재등록해야 실제 스케줄 실행에 반영됨 -- 재등록 전까진 09:00/08:40/15:35 스케줄은 여전히
+  구 버전(`powershell.exe -WindowStyle Hidden`) 그대로 실행됨.
+
 ## 알려진 한계 / 다음에 할 만한 것
 
 - **`probability_mode: wave`에 확률 임계값(상위 구간만 진입) 필터 추가 검토 -- 2026-09-14
