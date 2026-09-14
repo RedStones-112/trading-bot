@@ -533,12 +533,27 @@ int main() {
             log("네이버뉴스 비활성화: naver_client_id/naver_client_secret 미설정");
     }
 
-    try {
-        client->authenticate();
-    } catch (const std::exception& e) {
-        log(std::string("authentication failed, check appkey/appsecret in config.json: ") + e.what());
-        return 1;
-    }
+    // KIS (especially 모의투자) rate-limits aggressively (EGW00201, "초당 거래건수를
+    // 초과하였습니다") -- transient, resolves on its own within a couple seconds. Retry
+    // indefinitely rather than giving up, since this call runs once at startup and the
+    // trading loop must not start against a stale/empty view of the account.
+    auto retryUntilSuccess = [&](auto&& fn, const std::string& what) {
+        while (true) {
+            try {
+                return fn();
+            } catch (const std::exception& e) {
+                log(what + " 실패, 재시도: " + e.what());
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+            }
+        }
+    };
+
+    // 인증도 같은 이유로 재시도 대상 -- 2026-09-14 09:00:14에 WinHTTP 타임아웃
+    // (GetLastError=12002) 한 번으로 authenticate()가 예외를 던지고 main()이 그대로
+    // 종료돼서, 그날 하루 봇이 통째로 안 뜬 채 다음 날 09:00까지 멈춰 있었던 사례가 있음
+    // (appkey/appsecret이 실제로 잘못된 경우에도 계속 재시도하게 되지만, 15:35 자동종료
+    // 스케줄이 그 경우의 백스톱 역할을 함).
+    retryUntilSuccess([&] { client->authenticate(); return true; }, "KIS 인증");
     if (mode == "mock") log("using local mock broker (no network, no account)");
     else if (mode == "sim") log("authenticated with KIS API (live quotes, orders fill locally, no real money)");
     else log("authenticated with KIS API");
@@ -571,21 +586,6 @@ int main() {
     };
 
     SharedState shared;
-
-    // KIS (especially 모의투자) rate-limits aggressively (EGW00201, "초당 거래건수를
-    // 초과하였습니다") -- transient, resolves on its own within a couple seconds. Retry
-    // indefinitely rather than giving up, since this call runs once at startup and the
-    // trading loop must not start against a stale/empty view of the account.
-    auto retryUntilSuccess = [&](auto&& fn, const std::string& what) {
-        while (true) {
-            try {
-                return fn();
-            } catch (const std::exception& e) {
-                log(what + " 실패, 재시도: " + e.what());
-                std::this_thread::sleep_for(std::chrono::seconds(3));
-            }
-        }
-    };
 
     // Orders from a previous run that never got confirmed (see fill-confirmation below)
     // can still be sitting unfilled in the account -- cancel them before doing anything
