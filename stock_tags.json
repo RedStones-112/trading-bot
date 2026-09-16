@@ -333,6 +333,14 @@
       "전기·전자"
     ]
   },
+  "050890": {
+    "lastUpdated": "2026-09-16",
+    "name": "쏠리드",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "052220": {
     "lastUpdated": "2026-09-15",
     "name": "iMBC",
@@ -669,6 +677,14 @@
     "parentCompany": "",
     "tags": [
       "기계·장비"
+    ]
+  },
+  "321370": {
+    "lastUpdated": "2026-09-16",
+    "name": "센서뷰",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "327260": {
