@@ -66,6 +66,14 @@
       "AI"
     ]
   },
+  "006340": {
+    "lastUpdated": "2026-09-18",
+    "name": "대원전선",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "006910": {
     "lastUpdated": "2026-09-08",
     "name": "보성파워텍",
@@ -503,6 +511,14 @@
       "화학"
     ]
   },
+  "098460": {
+    "lastUpdated": "2026-09-18",
+    "name": "고영",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
   "100590": {
     "lastUpdated": "2026-09-09",
     "name": "머큐리",
@@ -653,6 +669,14 @@
     "parentCompany": "",
     "tags": [
       "전기·전자"
+    ]
+  },
+  "265740": {
+    "lastUpdated": "2026-09-18",
+    "name": "엔에프씨",
+    "parentCompany": "",
+    "tags": [
+      "화학"
     ]
   },
   "271830": {
@@ -813,6 +837,14 @@
     "parentCompany": "",
     "tags": [
       "IT 서비스"
+    ]
+  },
+  "950260": {
+    "lastUpdated": "2026-09-18",
+    "name": "인제니아테라퓨틱스(Reg.S)",
+    "parentCompany": "",
+    "tags": [
+      " "
     ]
   }
 }
