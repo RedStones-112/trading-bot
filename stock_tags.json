@@ -1,4 +1,12 @@
 {
+  "000720": {
+    "lastUpdated": "2026-09-22",
+    "name": "현대건설",
+    "parentCompany": "",
+    "tags": [
+      "건설"
+    ]
+  },
   "000990": {
     "lastUpdated": "2026-09-07",
     "name": "DB하이텍",
@@ -80,6 +88,15 @@
     "parentCompany": "",
     "tags": [
       "금속"
+    ]
+  },
+  "007660": {
+    "lastUpdated": "2026-09-22",
+    "name": "이수페타시스",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자",
+      "AI"
     ]
   },
   "008290": {
@@ -210,6 +227,14 @@
       "금속"
     ]
   },
+  "025980": {
+    "lastUpdated": "2026-09-22",
+    "name": "아난티",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
   "028050": {
     "lastUpdated": "2026-08-27",
     "name": "삼성E&A",
@@ -285,6 +310,14 @@
       "IT 서비스"
     ]
   },
+  "041190": {
+    "lastUpdated": "2026-09-22",
+    "name": "우리기술투자",
+    "parentCompany": "",
+    "tags": [
+      "금융"
+    ]
+  },
   "042660": {
     "lastUpdated": "2026-09-09",
     "name": "한화오션",
@@ -339,6 +372,14 @@
     "parentCompany": "",
     "tags": [
       "전기·전자"
+    ]
+  },
+  "049470": {
+    "lastUpdated": "2026-09-22",
+    "name": "비트플래닛",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
     ]
   },
   "050890": {
@@ -397,6 +438,14 @@
       "유통"
     ]
   },
+  "066570": {
+    "lastUpdated": "2026-09-22",
+    "name": "LG전자",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "067290": {
     "lastUpdated": "2026-08-31",
     "name": "JW신약",
@@ -435,6 +484,14 @@
     "parentCompany": "",
     "tags": [
       "기계·장비"
+    ]
+  },
+  "080220": {
+    "lastUpdated": "2026-09-22",
+    "name": "제주반도체",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "082740": {
@@ -735,6 +792,14 @@
       "IT 서비스"
     ]
   },
+  "299170": {
+    "lastUpdated": "2026-09-22",
+    "name": "더블유에스아이",
+    "parentCompany": "",
+    "tags": [
+      "유통"
+    ]
+  },
   "299660": {
     "lastUpdated": "2026-07-28",
     "name": "셀리드",
@@ -797,6 +862,14 @@
     "parentCompany": "",
     "tags": [
       "IT 서비스"
+    ]
+  },
+  "356860": {
+    "lastUpdated": "2026-09-22",
+    "name": "티엘비",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "365660": {
