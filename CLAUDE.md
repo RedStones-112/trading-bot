@@ -31,8 +31,11 @@
 전체 아키텍처/설계 경위/과거 진단 기록은 `PROGRESS.md`(작업 인수인계 노트)에, 사용법/동작
 방식은 `README.md`에 있음 -- 이 프로젝트에서 무언가 작업하기 전에 항상 먼저 읽을 것.
 전략/코드가 실제로 바뀔 때마다(업데이트 직전 누적수익률/그 원인/업데이트 내용/이유) 로컬
-`kakao_bridge`(https://github.com/RedStones-112/kakao_bridge, `127.0.0.1:8765`, 인증 없음)가
-떠 있으면 카카오톡 "나와의 채팅"으로 요약을 보낸다(2026-09-23 도입, `wait_for_fullscreen: false`
-필수, 실패해도 세션 실패로 취급 안 함 -- 상세는 `scripts/daily_improvement_prompt.md` 6-1 참고).
+`kakao_bridge`(https://github.com/RedStones-112/kakao_bridge, `127.0.0.1:8765`, 카카오 공식
+API(OAuth) 기반, UI 자동화 아님, 인증 없이 로컬에서만 호출)가 떠 있으면(`GET /health`로 확인)
+카카오톡 "나에게 보내기"로 요약을 보낸다(2026-09-23 도입, 같은 날 kakao_bridge가 공식 API
+방식으로 리워크되면서 `POST /send` body가 `{"message": "..."}` 뿐으로 단순화됨 -- 구버전의
+`wait_for_fullscreen` 파라미터는 제거됨). 실패해도 세션 실패로 취급 안 함 -- 상세는
+`scripts/daily_improvement_prompt.md` 6-1 참고.
 별도 파일에는 저장하지 않음 -- 카톡 대화 자체가 시간순 기록 역할을 하고, 판단 로직은
 `PROGRESS.md`의 "실험 추적" 표만 참고하므로 중복 저장이 불필요하다고 판단(2026-09-23).
