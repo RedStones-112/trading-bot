@@ -30,3 +30,10 @@
 
 전체 아키텍처/설계 경위/과거 진단 기록은 `PROGRESS.md`(작업 인수인계 노트)에, 사용법/동작
 방식은 `README.md`에 있음 -- 이 프로젝트에서 무언가 작업하기 전에 항상 먼저 읽을 것.
+전략/코드가 실제로 바뀔 때마다(업데이트 직전 누적수익률/그 원인/업데이트 이유)의 요약은
+`UPDATE_LOG.md`에 한 행씩 쌓임(2026-09-23 도입) -- 코드를 바꾸는 세션(자동/인터랙티브
+공통)은 검증 통과 후 이 파일에도 행을 추가할 것. 상세 서술은 여전히 `PROGRESS.md`에 남기고,
+`UPDATE_LOG.md`는 그 요약/한눈에 보기 용도. `UPDATE_LOG.md`에 행을 추가할 때는 로컬
+`kakao_bridge`(https://github.com/RedStones-112/kakao_bridge, `127.0.0.1:8765`, 인증 없음)가
+떠 있으면 같은 내용을 카카오톡 "나와의 채팅"으로도 보낸다(`wait_for_fullscreen: false` 필수,
+실패해도 세션 실패로 취급 안 함 -- 상세는 `scripts/daily_improvement_prompt.md` 6-2 참고).
