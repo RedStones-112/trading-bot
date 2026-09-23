@@ -235,6 +235,14 @@
       "일반서비스"
     ]
   },
+  "027040": {
+    "lastUpdated": "2026-09-23",
+    "name": "서울전자통신",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
   "028050": {
     "lastUpdated": "2026-08-27",
     "name": "삼성E&A",
@@ -867,6 +875,14 @@
   "356860": {
     "lastUpdated": "2026-09-22",
     "name": "티엘비",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "361610": {
+    "lastUpdated": "2026-09-23",
+    "name": "SK아이이테크놀로지",
     "parentCompany": "",
     "tags": [
       "전기·전자"
