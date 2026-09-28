@@ -22,6 +22,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -112,10 +113,22 @@ int main() {
 
     KisClient client(cfg.at("appkey"), cfg.at("appsecret"), cfg.value("cano", ""),
                       cfg.value("acnt_prdt_cd", ""), mode != "live");
-    try {
-        client.authenticate();
-    } catch (const std::exception& e) {
-        std::cerr << "인증 실패: " << e.what() << "\n";
+    // 단발성 WinHTTP 타임아웃(GetLastError=12002) 한 번에 전체 실행이 날아가는 걸 막음 --
+    // main.cpp가 2026-09-15에 같은 증상(인증 재시도 누락)을 무한 재시도로 고쳤던 것과 같은
+    // 이유지만, 이건 사람이 지켜보는 수동 도구라 무한정 매달리지 않고 유한 횟수만 재시도함
+    // (2026-09-28, backtest_bulk.cpp를 실제로 돌리다 라이브로 재현해서 발견).
+    bool authenticated = false;
+    for (int attempt = 1; attempt <= 5 && !authenticated; attempt++) {
+        try {
+            client.authenticate();
+            authenticated = true;
+        } catch (const std::exception& e) {
+            std::cerr << "인증 실패(시도 " << attempt << "/5): " << e.what() << "\n";
+            if (attempt < 5) std::this_thread::sleep_for(std::chrono::seconds(3));
+        }
+    }
+    if (!authenticated) {
+        std::cerr << "인증 5회 재시도 모두 실패 -- 종료.\n";
         return 1;
     }
     std::cout << "인증 완료, 일봉 조회 시작 (종목당 " << kHistoryBars << "봉, 1.1초 간격)...\n";
@@ -216,7 +229,24 @@ int main() {
         }
     };
     reportCalibration("basic 모드", false);
-    reportCalibration("wave 모드", true);
+
+    // wave 모드는 basic처럼 연속값이 아니라 probabilityFromWaveAnalysis(strategy.hpp)가
+    // 정확히 8개 이산값만 반환하는 룩업 테이블이라(2026-09-15 발견, PROGRESS.md "알려진
+    // 한계" 참고), 위 percentile 3분위 분할은 그 이산값 클러스터(특히 0.65)를 표본 순서에
+    // 따라 임의로 상/중위 경계에서 쪼개는 타이브레이크 아티팩트를 만듦 -- 그래서 여러
+    // 세션에 걸쳐 "단조증가 깨짐/회복"으로 보였던 게 실제 신호 강도 변화가 아니라 이
+    // 아티팩트였을 가능성이 컸음. 대신 실제 반환값별로 직접 묶어서(경계를 임의로 정하지
+    // 않으므로 이 아티팩트가 원천적으로 없음) 각 값의 진짜 승률/EV를 보여줌.
+    report << "\n  wave 모드 (이산값별 -- percentile 3분위 대신 실제 반환값으로 직접 묶음,\n"
+              "   09-15에 발견된 타이브레이크 아티팩트 회피):\n";
+    std::map<double, Bucket> waveByValue;
+    for (auto& r : records) addTo(waveByValue[r.waveProb], r.outcome);
+    if (waveByValue.empty()) {
+        report << "    표본 부족(0건)\n";
+    } else {
+        for (auto& [value, b] : waveByValue)
+            report << "    확률=" << std::fixed << std::setprecision(2) << value << ": " << bucketLine(b) << "\n";
+    }
 
     std::cout << "\n" << report.str();
     std::ofstream out("backtest_report.txt");

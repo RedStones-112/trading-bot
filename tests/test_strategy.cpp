@@ -3,6 +3,7 @@
 #include "../src/news_crawler.hpp"
 #include "../src/event_calendar.hpp"
 #include "../src/ml_model.hpp"
+#include "../src/bar_cache.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -296,6 +297,23 @@ int main() {
         assert(focusWeeklySlopeSignal({100.0, 95.0, 85.0}) == FocusAction::Hold);      // -5 -> -10, 오히려 가팔라짐
         assert(focusWeeklySlopeSignal({100.0, 105.0, 115.0}) == FocusAction::Hold);    // +5 -> +10, 오히려 가팔라짐
         assert(focusWeeklySlopeSignal({100.0, 100.0}) == FocusAction::Hold);           // 데이터 부족(3개 미만)
+    }
+
+    // mergeBars (bar_cache.hpp, backtest_bulk.cpp's local disk cache): overlapping dates
+    // dedupe with `fresh` winning, non-overlapping dates from both sides are kept, result
+    // is sorted oldest-first, and bars with an empty date are dropped.
+    {
+        auto bar = [](std::string date, double close) { DailyBar b; b.date = date; b.close = close; return b; };
+        std::vector<DailyBar> existing = {bar("20260101", 100.0), bar("20260102", 101.0)};
+        std::vector<DailyBar> fresh = {bar("20260102", 999.0), bar("20260103", 103.0)}; // overlaps 0102
+        auto merged = mergeBars(existing, fresh);
+        assert(merged.size() == 3);
+        assert(merged[0].date == "20260101" && merged[0].close == 100.0);
+        assert(merged[1].date == "20260102" && merged[1].close == 999.0); // fresh wins on collision
+        assert(merged[2].date == "20260103" && merged[2].close == 103.0);
+
+        std::vector<DailyBar> withBlankDate = {bar("", 1.0), bar("20260101", 100.0)};
+        assert(mergeBars(withBlankDate, {}).size() == 1); // blank-date bar dropped
     }
 
     std::cout << "all tests passed\n";

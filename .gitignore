@@ -7,6 +7,8 @@ performance_report.txt
 sim_fills.log
 pending_orders.txt
 backtest_report.txt
+backtest_bulk_report.txt
+data/
 ml_models/
 build/
 scripts/autostart.log

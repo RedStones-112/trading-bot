@@ -39,3 +39,19 @@ add_executable(backtest
     src/http_client.cpp
 )
 target_link_libraries(backtest PRIVATE winhttp)
+
+# Wide-universe, multi-year offline backtest (manual research tool, not used by the daily
+# automated session) -- caches 5 years of real KIS daily bars locally under data/daily_bars/
+# so re-running doesn't re-page the whole history every time. See src/backtest_bulk.cpp.
+add_executable(backtest_bulk
+    src/backtest_bulk.cpp
+    src/kis_client.cpp
+    src/http_client.cpp
+)
+target_link_libraries(backtest_bulk PRIVATE winhttp)
+
+# Portfolio-level simulation over locally cached bars only -- no KIS client, no network, so
+# no winhttp link needed. See src/portfolio_sim.cpp.
+add_executable(portfolio_sim
+    src/portfolio_sim.cpp
+)

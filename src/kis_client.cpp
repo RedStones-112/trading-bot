@@ -212,8 +212,9 @@ std::vector<DailyBar> KisClient::getDailyBars(const std::string& code, int count
             b.high = std::stod(row.value("stck_hgpr", "0"));
             b.low = std::stod(row.value("stck_lwpr", "0"));
             b.volume = std::stod(row.value("acml_vol", "0"));
+            b.date = row.value("stck_bsop_date", "");
             pageBars.push_back(b);
-            oldestDateInPage = row.value("stck_bsop_date", ""); // last row in the loop = oldest (most-recent-first)
+            oldestDateInPage = b.date; // last row in the loop = oldest (most-recent-first)
         }
         if (pageBars.empty() || oldestDateInPage.empty()) break; // no more history before pageEnd
 

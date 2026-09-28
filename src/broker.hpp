@@ -13,11 +13,15 @@ struct StockInfo {
 // One day's OHLCV bar from inquire-daily-itemchartprice, oldest-first. `close` feeds SMA;
 // `high`/`low`/`volume` feed the volume-profile probability estimate (strategy.hpp) --
 // KIS returns all four in the same call already used for SMA history, no extra API cost.
+// `date` (KIS's `stck_bsop_date`, "YYYYMMDD") was already in the response but unused until
+// bar_cache.hpp needed it (2026-09-28) to dedupe/merge a local disk cache by calendar day --
+// left empty by MockBroker/SimBroker synthetic bars, which have no real calendar day.
 struct DailyBar {
     double close = 0.0;
     double high = 0.0;
     double low = 0.0;
     double volume = 0.0;
+    std::string date;
 };
 
 // A stock already sitting in the real account, as reported by the broker itself --

@@ -251,6 +251,14 @@
       "일반서비스"
     ]
   },
+  "028300": {
+    "lastUpdated": "2026-09-28",
+    "name": "HLB",
+    "parentCompany": "",
+    "tags": [
+      "제약"
+    ]
+  },
   "028670": {
     "lastUpdated": "2026-08-04",
     "name": "팬오션",
@@ -750,6 +758,14 @@
     "parentCompany": "",
     "tags": [
       "제약"
+    ]
+  },
+  "255220": {
+    "lastUpdated": "2026-09-28",
+    "name": "SG",
+    "parentCompany": "",
+    "tags": [
+      "비금속"
     ]
   },
   "256840": {
