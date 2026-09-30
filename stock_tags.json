@@ -211,6 +211,14 @@
       "기계·장비"
     ]
   },
+  "023790": {
+    "lastUpdated": "2026-09-30",
+    "name": "동일스틸럭스",
+    "parentCompany": "",
+    "tags": [
+      "금속"
+    ]
+  },
   "024060": {
     "lastUpdated": "2026-09-02",
     "name": "흥구석유",
@@ -297,6 +305,14 @@
     "parentCompany": "",
     "tags": [
       "섬유·의류"
+    ]
+  },
+  "033790": {
+    "lastUpdated": "2026-09-30",
+    "name": "피노",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "034020": {
@@ -675,6 +691,14 @@
   "153890": {
     "lastUpdated": "2026-08-06",
     "name": "져스텍",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "178320": {
+    "lastUpdated": "2026-09-30",
+    "name": "서진시스템",
     "parentCompany": "",
     "tags": [
       "전기·전자"
