@@ -9,7 +9,8 @@ from rl import ddctl
 class PortfolioEnv(gym.Env):
     def __init__(self, data, window=10, cost_bps=5.0, episode_len=None, random_start=False,
                  turnover_penalty=0.0, smooth=0.0, anchor_scale=0.0, mask_feats=False,
-                 dd_limit=0.0, dd_mult=4.0):
+                 dd_limit=0.0, dd_mult=4.0, rebalance_every=1):
+        self.k = max(1, int(rebalance_every))  # 한 step = k거래일(첫날만 리밸런스, 나머지는 보유하며 drift)
         self.mask_feats = mask_feats
         self.dd_limit, self.dd_mult = dd_limit, dd_mult  # 낙폭 제어 오버레이(rl/ddctl.py), 0이면 끔
         self.tp, self.smooth, self.anchor = turnover_penalty, smooth, anchor_scale
@@ -60,14 +61,19 @@ class PortfolioEnv(gym.Env):
             nw = (self.smooth * self.w + (1 - self.smooth) * nw).astype(np.float32)
         nw = ddctl.apply(nw, self.value, self.peak, self.dd_limit, self.dd_mult).astype(np.float32)
         turnover = np.abs(nw - self.w).sum()
-        r = self.d.rets[self.t + 1]
-        gross = float(nw[:-1] @ r)
-        net = gross - self.cost * turnover
-        net = max(net, -0.99)
-        self.value *= 1 + net
-        self.peak = max(self.peak, self.value)
-        # 가격 변동에 따른 비중 drift
-        drift = np.append(nw[:-1] * (1 + r), nw[-1]); self.w = (drift / drift.sum()).astype(np.float32)
-        self.t += 1
+        v0, path, w = self.value, [], nw
+        for j in range(self.k):
+            r = self.d.rets[self.t + 1]
+            gross = float(w[:-1] @ r)
+            net = max(gross - (self.cost * turnover if j == 0 else 0.0), -0.99)
+            self.value *= 1 + net
+            self.peak = max(self.peak, self.value)
+            path.append(self.value)
+            # 가격 변동에 따른 비중 drift
+            drift = np.append(w[:-1] * (1 + r), w[-1]); w = (drift / drift.sum()).astype(np.float32)
+            self.t += 1
+            if self.t >= self.end:
+                break
+        self.w = w
         done = self.t >= self.end
-        return self._obs(), float(np.log1p(net)) - self.tp * float(turnover), done, False, {"value": self.value, "turnover": float(turnover)}
+        return self._obs(), float(np.log(self.value / v0)) - self.tp * float(turnover), done, False,             {"value": self.value, "turnover": float(turnover), "path": path}

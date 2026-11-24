@@ -10,11 +10,12 @@ def logit(w):
     return np.log(np.asarray(w, np.float64) + 1e-9)
 
 def run(env, policy):
+    """policy(obs, i): i = 구간 시작(window) 기준 현재 날짜 인덱스. 리밸런스 주기가 k일이어도 일별 가치 경로로 기록."""
     obs, _ = env.reset()
-    vals, tos, done, i = [1.0], [], False, 0
+    vals, tos, done = [1.0], [], False
     while not done:
-        obs, _, done, _, info = env.step(policy(obs, i))
-        vals.append(info["value"]); tos.append(info["turnover"]); i += 1
+        obs, _, done, _, info = env.step(policy(obs, env.t - env.window))
+        vals += info["path"]; tos += [info["turnover"]] + [0.0] * (len(info["path"]) - 1)
     return np.array(vals), np.array(tos)
 
 def metrics(vals, tos):
@@ -35,18 +36,23 @@ def main():
     ap.add_argument("--turnover-penalty", type=float, default=0.0)
     ap.add_argument("--smooth", type=float, default=0.0)
     ap.add_argument("--data", default=None)
+    ap.add_argument("--market", default=None, help="시장특성 parquet(spy/vix 열), 국내는 rl/data/kr_market.parquet")
     ap.add_argument("--end", default=None)
     ap.add_argument("--mask-feats", action="store_true")
     ap.add_argument("--dd-limit", type=float, default=0.0)
     ap.add_argument("--dd-mult", type=float, default=4.0)
     ap.add_argument("--ext", action="store_true")
     ap.add_argument("--anchor", type=float, default=0.0)
+    ap.add_argument("--rebalance-every", type=int, default=1)
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
-    data = (load(a.data or PATH0, ext=a.ext)).split(a.start, a.end)
+    data = (load(a.data or PATH0, ext=a.ext, market=a.market)).split(a.start, a.end)
+    k = a.rebalance_every
     env = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False,
-                       dd_limit=a.dd_limit, dd_mult=a.dd_mult)
+                       dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=k)
+    env1 = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False,
+                        dd_limit=a.dd_limit, dd_mult=a.dd_mult)  # 매일 리밸런스 비교용
     N = env.N
     def eqw(i):  # 시점 i의 거래가능 종목 동일비중
         m = data.elig[10 + i] if data.pit else np.ones(N, bool)
@@ -58,30 +64,40 @@ def main():
     policies = {
         "동일비중 B&H": lambda o, i: logit(eqw(0)) if i == 0 else logit(hold(o)),  # 이후 현재(drift) 주식 비중 유지
         "동일비중 일일리밸": lambda o, i: logit(eqw(i)),
+        f"동일비중 {k}일리밸": lambda o, i: logit(eqw(i)),
         "전액 현금": lambda o, i: logit(cash),
     }
+    envs = {"동일비중 일일리밸": env1}
+    import pandas as pd
+    raw = pd.read_parquet(a.data or PATH0)
+    if "marcap" in raw.columns:  # 시가총액 가중(순위권 종목, k일마다 리밸런스)
+        cap = raw.pivot(index="date", columns="ticker", values="marcap").reindex(
+            index=pd.DatetimeIndex(data.dates), columns=data.tickers).ffill().fillna(0).values
+        def capw(i):
+            c = cap[10 + i] * (data.elig[10 + i] if data.pit else 1)
+            return np.append(c / c.sum(), 0.0)
+        policies[f"시총가중 {k}일리밸"] = lambda o, i: logit(capw(i))
     penv = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False,
                         turnover_penalty=a.turnover_penalty, smooth=a.smooth, anchor_scale=a.anchor, mask_feats=a.mask_feats,
-                             dd_limit=a.dd_limit, dd_mult=a.dd_mult)
+                             dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=k)
     if os.path.exists(a.model):
         from stable_baselines3 import PPO
         m = PPO.load(a.model)
         policies["PPO"] = lambda o, i: m.predict(o, deterministic=True)[0]
-        envs = {"PPO": penv}
+        envs["PPO"] = penv
     else:
         print(f"[모델 없음: {a.model}] 베이스라인만 평가")
 
-    envs = locals().get("envs", {})
     print(f"구간 {str(data.dates[0])[:10]} ~ {str(data.dates[-1])[:10]}, T={len(data.dates)}, N={N}, cost={a.cost_bps}bps")
     print(f"{'정책':<16}{'누적수익':>10}{'연환산':>10}{'연변동성':>10}{'샤프':>8}{'MDD':>10}{'일턴오버':>10}")
     for name, pol in policies.items():
         c, an, v, s, d, t = metrics(*run(envs.get(name, env), pol))
         print(f"{name:<14}{c:>10.2%}{an:>10.2%}{v:>10.2%}{s:>8.2f}{d:>10.2%}{t:>10.4f}")
-    spy_row(data)
+    spy_row(data, a.market)
 
-def spy_row(data):
+def spy_row(data, market=None):
     import pandas as pd
-    mp = "rl/data/market_long.parquet" if data.dates[0] < np.datetime64("2015-01-01") else "rl/data/market.parquet"
+    mp = market or ("rl/data/market_long.parquet" if data.dates[0] < np.datetime64("2015-01-01") else "rl/data/market.parquet")
     spy = pd.read_parquet(mp).spy.reindex(pd.DatetimeIndex(data.dates)).ffill().values[10:len(data.dates) - 1]
     v = spy / spy[0]
     c, an, vol, sh, dd, _ = metrics(v, np.zeros(1))

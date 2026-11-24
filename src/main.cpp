@@ -16,6 +16,8 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <cstdlib>
+#include <set>
 #include <ctime>
 #include <iomanip>
 #include <map>
@@ -491,6 +493,15 @@ int main() {
     // 넉넉하게 일봉을 받아옴 -- 기본값 기준 70일이라 100봉/콜 한도(kis_client.cpp) 아래라
     // 페이지네이션 없이 단일 호출로 끝남.
     int focusHistoryDays = (focusWeeklyMaWeeks + 4) * 5;
+
+    // ====== strategy_mode: "rl" -- 강화학습 모델(rl/live/kr_rl.py, 코스피/코스닥 시가총액 상위 100)로
+    // 매월 첫 거래일 장 열린 첫 사이클에 목표비중까지 리밸런스, 매일 rl_report_minute(기본 15:20)에 장마감 보고.
+    // 매매 내역/수익률은 카카오톡(kakao_bridge)으로 전송. scan/focus 전용 필드는 안 읽힘.
+    std::string rlPython = cfg.value("rl_python", std::string("python"));
+    double rlCashReserve = cfg.value("rl_cash_reserve", 0.02);      // 시장가 매수 증거금/수수료 여유
+    double rlMinTradeKrw = cfg.value("rl_min_trade_krw", 200000.0); // 이보다 작은 조정은 생략(회전율 비용)
+    double rlMinTradeFrac = cfg.value("rl_min_trade_frac", 0.25);   // 보유/목표의 이 비율 미만 조정도 생략
+    int rlReportMinute = cfg.value("rl_report_minute", 15 * 60 + 20);
     // 재학습 시에만 쓰는 긴 일봉 히스토리(스캔용 짧은 히스토리와 별도 조회) 및 라벨링에
     // 쓰는 관측 구간(익절/손절 중 먼저 닿는 쪽으로 라벨) -- 둘 다 사용자별로 바뀔 값이
     // 아니라 config로 안 빼고 여기 상수로 둠(다른 kEventLookaheadDays류와 같은 관례).
@@ -520,7 +531,9 @@ int main() {
     auto eventCalendar = loadEventCalendar("events.json");
     log("이벤트 캘린더 " + std::to_string(eventCalendar.size()) + "건 로드");
 
-    if (strategyMode == "focus") {
+    if (strategyMode == "rl") {
+        log("starting trading bot: mode=" + mode + " strategy_mode=rl (rl/live/kr_rl.py 모델, 월 1회 리밸런스, 매일 장마감 카톡 보고)");
+    } else if (strategyMode == "focus") {
         std::string symList;
         for (auto& s : focusSymbols) symList += (symList.empty() ? "" : ",") + s;
         log("starting trading bot: mode=" + mode + " strategy_mode=focus 종목=[" + symList +
@@ -752,7 +765,7 @@ int main() {
     // runs next. `sellQty` defaults to the whole position (Phase A/B always fully exit);
     // focus mode passes a smaller qty to scale a position down gradually instead of
     // liquidating it in one shot.
-    auto sellPosition = [&](const Position& p, double current, const std::string& reason, int sellQty = -1) {
+    auto sellPosition = [&](const Position& p, double current, const std::string& reason, int sellQty = -1) -> int {
         int qtyToSell = sellQty < 0 ? p.qty : sellQty;
         auto odno = client->placeMarketOrder(p.code, IBroker::Side::Sell, qtyToSell, feeRate, taxRate);
         std::string label = p.name + "(" + p.code + ")";
@@ -787,7 +800,7 @@ int main() {
             log("매도 미체결: " + label + " " + std::to_string(qtyToSell) + "주 주문했으나 " +
                 std::to_string(fillConfirmTimeoutSeconds) + "초 내 체결 확인 안 됨 (주문번호 " + odno +
                 "), 포지션 유지 -- 다음 poll에서 다시 판단");
-            return;
+            return 0;
         }
 
         double netPct = netProfitPct(p.avgBuyPrice, current, feeRate, taxRate);
@@ -808,13 +821,14 @@ int main() {
             auto it = shared.positions.find(p.code);
             if (it != shared.positions.end()) it->second.qty = remainingQty;
         }
+        return soldQty;
     };
 
     // focus 모드 전용 매수 헬퍼(Phase B의 매수 코드는 topUps/밸류에이션 부기까지 같이
     // 하므로 그대로 재사용하지 않고 따로 둠) -- 주문/체결확인/장부 처리는 Phase B와 동일한
     // 패턴, 포지션 갱신만 단순화(가중평균 평단가만 유지).
     auto buyIntoPosition = [&](const std::string& code, const std::string& name, double current,
-                               int qty, const std::string& reason) {
+                               int qty, const std::string& reason) -> int {
         auto odno = client->placeMarketOrder(code, IBroker::Side::Buy, qty, feeRate, taxRate);
         std::string label = name + "(" + code + ")";
         bool tracked = (mode == "paper" || mode == "live");
@@ -846,7 +860,7 @@ int main() {
         if (filledQty < 1) {
             log("매수 미체결: " + label + " " + std::to_string(qty) + "주 주문했으나 " +
                 std::to_string(fillConfirmTimeoutSeconds) + "초 내 체결 확인 안 됨 (주문번호 " + odno + ")");
-            return;
+            return 0;
         }
 
         bool toppedUp = false;
@@ -871,6 +885,7 @@ int main() {
             std::to_string(filledQty) + "주 @ " + krw(current) + fillNote + " (주문번호 " + odno +
             ", 사유 " + reason + ")");
         logTrade("BUY", code, name, filledQty, current, feeRate, 0.0, 0.0, reason);
+        return filledQty;
     };
 
     // focus 모드: 같은 종목에 연속으로 비중을 조정하는 사이 focus_rescale_interval_seconds
@@ -879,12 +894,253 @@ int main() {
     // 스레드가 읽는 holdings.txt 리포트와 무관해서 굳이 shared에 안 넣음).
     std::map<std::string, std::chrono::steady_clock::time_point> lastFocusScale;
 
+    // ---- strategy_mode "rl" 헬퍼 ----
+    // 상태(rl_state.json): rebalanced(마지막 리밸런스일)/rebalanced_month/reported, base_equity/base_date(RL 시작 자산),
+    // open_equity(리밸런스 직전 자산), last_close_equity(직전 장마감 자산), trades(오늘 매매 목록)
+    // -- 재시작해도 같은 달 두 번 리밸런스하지 않게 파일로 남김.
+    const std::string kRlState = "rl_state.json";
+    auto rlLoadState = [&]() {
+        json s = json::object();
+        std::ifstream f(kRlState);
+        if (f) { try { s = json::parse(f); } catch (...) {} }
+        return s;
+    };
+    auto rlSaveState = [&](const json& s) { std::ofstream(kRlState) << s.dump(1); };
+    auto rlPy = [&](const std::string& args) {
+        // cmd /c 규칙상 전체를 한 번 더 따옴표로 감쌈. 출력은 rl_python.log에 누적.
+        std::string cmd = "\"\"" + rlPython + "\" -m rl.live.kr_rl " + args + " >> rl_python.log 2>&1\"";
+        return std::system(cmd.c_str());
+    };
+    auto rlNotify = [&](const std::string& msg) {
+        { std::ofstream f("rl_message.txt", std::ios::binary); f << msg; }
+        int rc = rlPy("send --file rl_message.txt");
+        if (rc != 0) log("[RL] 카톡 전송 스크립트 실패(rc=" + std::to_string(rc) + ") -- 매매와 무관, 계속");
+    };
+    auto pct = [](double v) {
+        std::ostringstream o; o << std::showpos << std::fixed << std::setprecision(2) << v * 100 << "%";
+        return o.str();
+    };
+    // 계좌를 다시 읽어 포지션/현금을 실계좌 기준으로 맞추고 보유 종목 현재가로 총자산 계산.
+    // mock/sim은 getHoldings가 비어 있으므로 메모리 포지션을 그대로 씀.
+    auto rlSnapshot = [&](std::map<std::string, double>& prices, double& cash) -> double {
+        bool tracked = (mode == "paper" || mode == "live");
+        if (tracked) {
+            auto holdings = client->getHoldings();
+            std::this_thread::sleep_for(apiPause);
+            std::lock_guard<std::mutex> lock(shared.mtx);
+            std::map<std::string, Position> fresh;
+            for (auto& h : holdings) {
+                if (h.qty <= 0) continue;
+                Position p = shared.positions.count(h.code) ? shared.positions[h.code] : Position{};
+                p.code = h.code; p.name = h.name; p.qty = h.qty; p.avgBuyPrice = h.avgBuyPrice;
+                if (p.lastKnownPrice <= 0) p.lastKnownPrice = h.avgBuyPrice;
+                fresh[h.code] = p;
+            }
+            shared.positions = fresh;
+        }
+        cash = client->getBuyableCash();
+        std::this_thread::sleep_for(apiPause);
+        std::vector<Position> snap;
+        { std::lock_guard<std::mutex> lock(shared.mtx); shared.cash = cash;
+          for (auto& [c, p] : shared.positions) snap.push_back(p); }
+        double equity = cash;
+        for (auto& p : snap) {
+            double px = p.lastKnownPrice;
+            try { px = client->getCurrentPrice(p.code); } catch (const std::exception& e) {
+                log("[RL] " + p.name + "(" + p.code + ") 현재가 조회 실패, 직전가 사용: " + e.what());
+            }
+            std::this_thread::sleep_for(apiPause);
+            prices[p.code] = px;
+            equity += px * p.qty;
+            std::lock_guard<std::mutex> lock(shared.mtx);
+            if (shared.positions.count(p.code)) shared.positions[p.code].lastKnownPrice = px;
+        }
+        return equity;
+    };
+
+    // 월 1회 리밸런스. true = 이번 달 완료(성공 처리), false = 나중에 재시도.
+    auto rlRebalance = [&](json& st, const std::string& today) -> bool {
+        std::map<std::string, double> px;
+        double cash = 0;
+        double equity = rlSnapshot(px, cash);
+        log("[RL] 리밸런스 시작: 현금 " + krw(cash) + ", 총자산 " + krw(equity));
+        if (equity <= 0) { log("[RL] 총자산 0 -- 계좌 확인 필요"); return false; }
+
+        json tg;
+        auto readTargets = [&] {
+            std::ifstream f("rl_targets.json");
+            if (!f) return false;
+            try { tg = json::parse(f); } catch (...) { return false; }
+            return tg.value("generated", std::string()) == today;
+        };
+        if (!readTargets()) {
+            json hj; hj["cash"] = cash; hj["values"] = json::object();
+            { std::lock_guard<std::mutex> lock(shared.mtx);
+              for (auto& [c, p] : shared.positions) hj["values"][c] = px[c] * p.qty; }
+            std::ofstream("rl_holdings.json") << hj.dump();
+            log("[RL] 목표비중 계산 중(python -m rl.live.kr_rl targets, 수 분 소요)...");
+            int rc = rlPy("targets --holdings rl_holdings.json --out rl_targets.json");
+            if (rc != 0 || !readTargets()) {
+                log("[RL] 목표비중 계산 실패(rc=" + std::to_string(rc) + ", rl_python.log 확인) -- 나중에 재시도");
+                return false;
+            }
+        }
+        std::map<std::string, double> w;
+        for (auto& [c, v] : tg["weights"].items()) w[c] = v.get<double>();
+        log("[RL] 목표: " + std::to_string(w.size()) + "종목, 현금비중 " + pct(tg.value("cash_weight", 0.0)) +
+            " (기준 종가 " + tg.value("asof", std::string("?")) + ")");
+
+        struct Plan { std::string code; int delta; double price; };
+        std::vector<Plan> sells, buys;
+        std::set<std::string> codes;
+        std::map<std::string, Position> held;
+        { std::lock_guard<std::mutex> lock(shared.mtx); held = shared.positions; }
+        for (auto& [c, p] : held) codes.insert(c);
+        for (auto& [c, x] : w) codes.insert(c);
+        double investable = equity * (1 - rlCashReserve);
+        for (auto& c : codes) {
+            int cur = held.count(c) ? held[c].qty : 0;
+            double price = 0;
+            if (px.count(c)) price = px[c];
+            else {
+                try { price = client->getCurrentPrice(c); } catch (const std::exception& e) {
+                    log("[RL] " + c + " 현재가 조회 실패 -- 이번엔 건너뜀: " + e.what());
+                }
+                std::this_thread::sleep_for(apiPause);
+            }
+            if (price <= 0) continue;
+            int tgt = w.count(c) ? (int)std::floor(w[c] * investable / price) : 0;
+            int delta = tgt - cur;
+            if (delta == 0) continue;
+            double dv = std::abs(delta) * price;
+            // 전량 정리는 항상, 그 외 작은 조정은 생략(학습 때보다 비용을 줄이는 쪽)
+            if (tgt > 0 && (dv < rlMinTradeKrw || dv < rlMinTradeFrac * std::max(tgt, cur) * price)) continue;
+            (delta < 0 ? sells : buys).push_back({c, delta, price});
+        }
+        log("[RL] 계획: 매도 " + std::to_string(sells.size()) + "건, 매수 " + std::to_string(buys.size()) + "건");
+
+        std::vector<std::string> sold, bought, failed;
+        int attempted = 0, errors = 0;
+        for (auto& o : sells) {
+            attempted++;
+            Position p = held[o.code];
+            try {
+                int q = sellPosition(p, o.price, "RL리밸런스", -o.delta);
+                if (q > 0) sold.push_back(p.name + " " + std::to_string(q) + "주" +
+                                          (q < -o.delta ? "(부분 " + std::to_string(q) + "/" + std::to_string(-o.delta) + ")" : ""));
+                else failed.push_back(p.name + " 매도 미체결");
+            } catch (const std::exception& e) {
+                errors++; failed.push_back(p.name + " 매도 실패");
+                log("[RL] " + p.name + "(" + o.code + ") 매도 실패: " + e.what());
+            }
+            std::this_thread::sleep_for(apiPause);
+        }
+        try { cash = client->getBuyableCash(); } catch (const std::exception&) {}
+        std::this_thread::sleep_for(apiPause);
+        std::sort(buys.begin(), buys.end(), [](const Plan& a, const Plan& b) { return a.delta * a.price > b.delta * b.price; });
+        for (auto& o : buys) {
+            double unit = o.price * (1 + feeRate) * 1.005; // 시장가 체결 슬리피지 여유
+            int q = std::min(o.delta, (int)std::floor(cash / unit));
+            if (q < 1) { failed.push_back(o.code + " 현금 부족"); continue; }
+            attempted++;
+            std::string name = o.code;
+            try {
+                name = client->getStockName(o.code);
+                std::this_thread::sleep_for(apiPause);
+                int f = buyIntoPosition(o.code, name, o.price, q, "RL리밸런스");
+                if (f > 0) {
+                    bought.push_back(name + " " + std::to_string(f) + "주" +
+                                     (f < q ? "(부분 " + std::to_string(f) + "/" + std::to_string(q) + ")" : ""));
+                    cash -= f * unit;
+                } else failed.push_back(name + " 매수 미체결");
+            } catch (const std::exception& e) {
+                errors++; failed.push_back(name + " 매수 실패");
+                log("[RL] " + name + "(" + o.code + ") 매수 실패: " + e.what());
+            }
+            std::this_thread::sleep_for(apiPause);
+        }
+        if (attempted > 0 && errors == attempted) {
+            log("[RL] 주문 전부 거부(휴장일/장운영 문제 가능) -- 나중에 재시도");
+            return false;
+        }
+
+        if (!st.contains("base_equity")) { st["base_equity"] = equity; st["base_date"] = today; }
+        st["rebalanced"] = today;
+        st["rebalanced_month"] = today.substr(0, 7);
+        if (!st.contains("last_close_equity")) st["open_equity"] = equity;
+        st["trades"] = {{"sold", sold}, {"bought", bought}, {"failed", failed}};
+        rlSaveState(st);
+
+        auto join = [](const std::vector<std::string>& v) {
+            std::string s; for (auto& x : v) s += (s.empty() ? "" : ", ") + x; return s.empty() ? "-" : s;
+        };
+        std::string msg = "[국내 RL 모의투자] " + today + " 리밸런스 (기준 종가 " + tg.value("asof", std::string("?")) + ")\n" +
+            "총자산 " + krw(equity) + " (리밸런스 전)\n" +
+            "매도 " + std::to_string(sold.size()) + "건: " + join(sold) + "\n" +
+            "매수 " + std::to_string(bought.size()) + "건: " + join(bought) +
+            (failed.empty() ? "" : "\n미체결/실패 " + std::to_string(failed.size()) + "건: " + join(failed)) +
+            "\n목표 " + std::to_string(w.size()) + "종목, 현금비중 " + pct(tg.value("cash_weight", 0.0));
+        log(msg);
+        rlNotify(msg);
+        return true;
+    };
+
+    // 장마감 보고: 총자산, 일일 수익률(직전 장마감 대비, 첫날은 리밸런스 직전 대비), 누적 수익률(RL 시작 대비).
+    auto rlReport = [&](json& st, const std::string& today) {
+        std::map<std::string, double> px;
+        double cash = 0;
+        double equity = rlSnapshot(px, cash);
+        double prev = st.value("last_close_equity", st.value("open_equity", equity));
+        double base = st.value("base_equity", equity);
+        std::vector<std::pair<double, std::string>> top;
+        { std::lock_guard<std::mutex> lock(shared.mtx);
+          for (auto& [c, p] : shared.positions) top.push_back({px[c] * p.qty, p.name}); }
+        std::sort(top.rbegin(), top.rend());
+        std::string tops;
+        for (size_t i = 0; i < top.size() && i < 5; i++) {
+            std::ostringstream o; o << std::fixed << std::setprecision(1) << top[i].first / equity * 100;
+            tops += (tops.empty() ? "" : ", ") + top[i].second + " " + o.str() + "%";
+        }
+        bool tradedToday = st.value("rebalanced", std::string()) == today;
+        auto n = [&](const char* k) { return tradedToday && st["trades"].contains(k) ? st["trades"][k].size() : 0; };
+        std::string msg = "[국내 RL 모의투자] " + today + " 장마감\n" +
+            "총자산 " + krw(equity) + " (현금 " + krw(cash) + ", 보유 " + std::to_string(top.size()) + "종목)\n" +
+            "일일 수익률 " + pct(prev > 0 ? equity / prev - 1 : 0) + "\n" +
+            "누적 수익률 " + pct(base > 0 ? equity / base - 1 : 0) + " (" + st.value("base_date", today) + " 시작 " + krw(base) + " 대비)\n" +
+            (tradedToday ? "오늘 리밸런스: 매수 " + std::to_string(n("bought")) + "건, 매도 " + std::to_string(n("sold")) + "건\n"
+                         : "오늘 매매 없음(월 1회 리밸런스, 최근 " + st.value("rebalanced", std::string("-")) + ")\n") +
+            "비중 상위: " + (tops.empty() ? "-" : tops);
+        st["last_close_equity"] = equity;
+        st["reported"] = today;
+        rlSaveState(st);
+        std::ofstream("rl_equity.csv", std::ios::app) << today << "," << std::fixed << std::setprecision(0) << equity << "\n";
+        log(msg);
+        rlNotify(msg);
+    };
+    std::chrono::steady_clock::time_point rlRetryAt{};
+
     while (true) {
         try {
             rolloverIfNewDay();
 
             if (needsMarketHours && !isMarketOpen()) {
                 log("정규장 시간(평일 09:00~15:30) 외 -- 스캔 건너뜀");
+                std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
+                continue;
+            }
+
+            // strategy_mode: "rl" -- 하루 1회 목표비중 리밸런스 + 장마감 보고만 하고 나머지 poll은 대기.
+            if (strategyMode == "rl") {
+                std::string today = timestamp().substr(0, 10);
+                int nowMin = std::stoi(timestamp().substr(11, 2)) * 60 + std::stoi(timestamp().substr(14, 2));
+                json st = rlLoadState();
+                // 리밸런스는 매월 첫 거래일(그 달에 아직 안 했으면) 1회, 장마감 보고는 매일.
+                if (st.value("rebalanced_month", std::string()) != today.substr(0, 7)) {
+                    if (std::chrono::steady_clock::now() >= rlRetryAt && !rlRebalance(st, today))
+                        rlRetryAt = std::chrono::steady_clock::now() + std::chrono::minutes(20);
+                } else if (nowMin >= rlReportMinute && st.value("reported", std::string()) != today) {
+                    rlReport(st, today);
+                }
                 std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
                 continue;
             }

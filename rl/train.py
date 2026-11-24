@@ -13,9 +13,11 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default="rl/models/ppo.zip")
     ap.add_argument("--n-envs", type=int, default=4)
+    ap.add_argument("--cost-bps", type=float, default=5.0)
     ap.add_argument("--turnover-penalty", type=float, default=0.0)
     ap.add_argument("--smooth", type=float, default=0.0)
     ap.add_argument("--data", default=None)
+    ap.add_argument("--market", default=None, help="시장특성 parquet(spy/vix 열), 국내는 rl/data/kr_market.parquet")
     ap.add_argument("--train-start", default=None)
     ap.add_argument("--train-end", default="2024-01-01")
     ap.add_argument("--mask-feats", action="store_true")
@@ -23,16 +25,17 @@ def main():
     ap.add_argument("--dd-mult", type=float, default=4.0)
     ap.add_argument("--ext", action="store_true")
     ap.add_argument("--anchor", type=float, default=0.0)
+    ap.add_argument("--rebalance-every", type=int, default=1, help="리밸런스 주기(거래일), 월 1회 = 21")
     ap.add_argument("--policy", choices=["mlp", "shared"], default="mlp")
     a = ap.parse_args()
 
-    train = (load(a.data or PATH0, ext=a.ext)).split(a.train_start, a.train_end or None)
+    train = (load(a.data or PATH0, ext=a.ext, market=a.market)).split(a.train_start, a.train_end or None)
 
     def make(i):
         def f():
-            e = PortfolioEnv(train, random_start=True, episode_len=252,
+            e = PortfolioEnv(train, random_start=True, episode_len=252, cost_bps=a.cost_bps,
                              turnover_penalty=a.turnover_penalty, smooth=a.smooth, anchor_scale=a.anchor, mask_feats=a.mask_feats,
-                             dd_limit=a.dd_limit, dd_mult=a.dd_mult)
+                             dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=a.rebalance_every)
             e.reset(seed=a.seed + i)
             return Monitor(e)
         return f

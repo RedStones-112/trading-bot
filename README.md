@@ -224,6 +224,15 @@ libcurl 등 외부 의존성 없음. JSON은 nlohmann/json 헤더 하나만 vend
     (기울기 신호만으로 방향을 정함) -- 필요하면 요청해서 추가할 것. 다른 확률 모드들과
     마찬가지로 이 기울기 신호도 백테스트로 검증된 값은 아님.
 
+- **`rl`(2026-11-25)**: 강화학습 모델(`rl/live/kr_rl.py`, 모델 `rl/live/model/kc_s*.zip` 시드 3개 평균)로 운용.
+  유니버스는 **코스피/코스닥 시가총액 상위 100 보통주**(매년 11/29 이후 첫 거래일 재선정, `rl/collect_kr_cap.py` --
+  FinanceData/marcap 일별 시가총액, 상장폐지 포함). 레버리지/인버스/ETF/ETN은 제외. **매월 첫 거래일** 장 열린 첫
+  사이클에 `python -m rl.live.kr_rl targets`(FDR 일봉, 약 30초)로 목표비중 `rl_targets.json`을 만들고 그 비중까지
+  리밸런스(매도 먼저, `rl_min_trade_krw`/`rl_min_trade_frac` 미만 조정 생략, 시장가 + 체결확인 공유). 매일
+  `rl_report_minute`(15:20)에 장마감 보고. 리밸런스 직후 매매 목록, 매일 일일/누적 수익률을 카카오톡(kakao_bridge)으로
+  보냄(`rl_message.txt`, 파이썬 로그 `rl_python.log`, 상태 `rl_state.json`, 자산 기록 `rl_equity.csv`). 주문이 전부
+  거부되면(휴장일 등) 20분 뒤 재시도. 백테스트: 동일비중 월간 리밸런스 수준, 코스피(시총가중)보다는 낮음(PROGRESS.md).
+
 ## 준비
 
 - `mock`: 아무 준비 없이 바로 실행 가능.
