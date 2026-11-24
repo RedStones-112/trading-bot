@@ -37,25 +37,32 @@ def main():
     ap.add_argument("--data", default=None)
     ap.add_argument("--end", default=None)
     ap.add_argument("--mask-feats", action="store_true")
+    ap.add_argument("--dd-limit", type=float, default=0.0)
+    ap.add_argument("--dd-mult", type=float, default=4.0)
     ap.add_argument("--ext", action="store_true")
     ap.add_argument("--anchor", type=float, default=0.0)
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
     data = (load(a.data or PATH0, ext=a.ext)).split(a.start, a.end)
-    env = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False)
+    env = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False,
+                       dd_limit=a.dd_limit, dd_mult=a.dd_mult)
     N = env.N
     def eqw(i):  # 시점 i의 거래가능 종목 동일비중
         m = data.elig[10 + i] if data.pit else np.ones(N, bool)
         return np.append(m / m.sum(), 0.0)
     cash = np.zeros(N + 1); cash[-1] = 1.0
+    def hold(o):  # 현재 주식 비중 비율 유지, 현금은 목표 0 (오버레이가 켜지면 상한만큼만 투자)
+        ws = o[10 * N * env.F: 10 * N * env.F + N].astype(np.float64)
+        return np.append(ws / ws.sum(), 0.0) if ws.sum() > 0 else eqw(0)
     policies = {
-        "동일비중 B&H": lambda o, i: logit(eqw(0)) if i == 0 else logit(o[10 * N * env.F: 10 * N * env.F + N + 1]),  # 이후 현재(drift) 비중 유지
+        "동일비중 B&H": lambda o, i: logit(eqw(0)) if i == 0 else logit(hold(o)),  # 이후 현재(drift) 주식 비중 유지
         "동일비중 일일리밸": lambda o, i: logit(eqw(i)),
         "전액 현금": lambda o, i: logit(cash),
     }
     penv = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False,
-                        turnover_penalty=a.turnover_penalty, smooth=a.smooth, anchor_scale=a.anchor, mask_feats=a.mask_feats)
+                        turnover_penalty=a.turnover_penalty, smooth=a.smooth, anchor_scale=a.anchor, mask_feats=a.mask_feats,
+                             dd_limit=a.dd_limit, dd_mult=a.dd_mult)
     if os.path.exists(a.model):
         from stable_baselines3 import PPO
         m = PPO.load(a.model)

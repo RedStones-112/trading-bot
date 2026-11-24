@@ -4,11 +4,14 @@ t일 종가에서 비중을 정하고 t+1일 수익률이 실현됨(미래누수
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
+from rl import ddctl
 
 class PortfolioEnv(gym.Env):
     def __init__(self, data, window=10, cost_bps=5.0, episode_len=None, random_start=False,
-                 turnover_penalty=0.0, smooth=0.0, anchor_scale=0.0, mask_feats=False):
+                 turnover_penalty=0.0, smooth=0.0, anchor_scale=0.0, mask_feats=False,
+                 dd_limit=0.0, dd_mult=4.0):
         self.mask_feats = mask_feats
+        self.dd_limit, self.dd_mult = dd_limit, dd_mult  # 낙폭 제어 오버레이(rl/ddctl.py), 0이면 끔
         self.tp, self.smooth, self.anchor = turnover_penalty, smooth, anchor_scale
         self.d, self.window, self.cost = data, window, cost_bps / 1e4
         self.T, self.N, self.F = data.feats.shape
@@ -16,7 +19,8 @@ class PortfolioEnv(gym.Env):
         self.random_start = random_start
         self.action_space = spaces.Box(-5, 5, (self.N + 1,), np.float32)
         self.observation_space = spaces.Box(-np.inf, np.inf,
-            (window * self.N * self.F + self.N + 1 + (self.N if data.pit else 0),), np.float32)
+            (window * self.N * self.F + self.N + 1 + (self.N if data.pit else 0) + (2 if dd_limit > 0 else 0),),
+            np.float32)
 
     def _obs(self):
         sl = slice(self.t - self.window + 1, self.t + 1)
@@ -25,6 +29,9 @@ class PortfolioEnv(gym.Env):
             x = x * self.d.elig[sl][:, :, None]
         x = x.ravel()
         parts = [x, self.w] + ([self.d.elig[self.t].astype(np.float32)] if self.d.pit else [])
+        if self.dd_limit > 0:  # 현재 낙폭과 허용 노출 상한
+            parts.append(np.array([self.value / self.peak - 1,
+                ddctl.exposure_cap(self.value, self.peak, self.dd_limit, self.dd_mult)], np.float32))
         return np.concatenate(parts).astype(np.float32)
 
     def reset(self, seed=None, options=None):
@@ -38,6 +45,7 @@ class PortfolioEnv(gym.Env):
         self.end = min(self.T - 2, self.t0 + self.episode_len) if self.episode_len else self.T - 2
         self.w = np.zeros(self.N + 1, np.float32); self.w[-1] = 1.0
         self.value = 1.0
+        self.peak = 1.0
         return self._obs(), {"value": self.value}
 
     def step(self, action):
@@ -50,12 +58,14 @@ class PortfolioEnv(gym.Env):
         e = np.exp(a - a.max()); nw = (e / e.sum()).astype(np.float32)
         if self.smooth > 0:
             nw = (self.smooth * self.w + (1 - self.smooth) * nw).astype(np.float32)
+        nw = ddctl.apply(nw, self.value, self.peak, self.dd_limit, self.dd_mult).astype(np.float32)
         turnover = np.abs(nw - self.w).sum()
         r = self.d.rets[self.t + 1]
         gross = float(nw[:-1] @ r)
         net = gross - self.cost * turnover
         net = max(net, -0.99)
         self.value *= 1 + net
+        self.peak = max(self.peak, self.value)
         # 가격 변동에 따른 비중 drift
         drift = np.append(nw[:-1] * (1 + r), nw[-1]); self.w = (drift / drift.sum()).astype(np.float32)
         self.t += 1

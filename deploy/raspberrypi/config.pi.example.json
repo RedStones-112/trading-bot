@@ -1,0 +1,12 @@
+{
+  // KIS 모의투자 전용 -- mode는 반드시 "paper" (실행기가 다른 값이면 중단)
+  "mode": "paper",
+  "appkey": "모의투자_APP_KEY",
+  "appsecret": "모의투자_APP_SECRET",
+  // 해외주식 포함 모의계좌(5로 시작하는 8자리) / 뒤 2자리
+  "cano": "50000000",
+  "acnt_prdt_cd": "01",
+  // 선택: 텔레그램 알림 (BotFather로 봇 생성 -> 토큰, 봇에게 말 건 뒤 getUpdates로 chat_id 확인)
+  "telegram_bot_token": "",
+  "telegram_chat_id": ""
+}

@@ -46,7 +46,11 @@ def main():
     ap.add_argument("--horizon", type=int, default=20)
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--cost-bps", type=float, default=5.0)
+    ap.add_argument("--reverse", action="store_true", help="2006~2016 학습 / 2016~ 시험")
     a = ap.parse_args(); h = a.horizon
+    global TRAIN, TEST
+    if a.reverse:
+        TRAIN, TEST = TEST, TRAIN
     sys.stdout.reconfigure(encoding="utf-8")
 
     d = load("rl/data/us_pit_20y.parquet", ext=True)
@@ -80,7 +84,8 @@ def main():
         print(f"{NAMES[f]:<14}{r_tr[0]:>9.4f}{r_tr[2]:>8.2f}{r_te[0]:>9.4f}{r_te[2]:>8.2f}  {same}")
 
     # 2) 모델: 학습구간에서 5일 간격 표본으로 적합(중첩 완화)
-    idx_tr = np.where(tr)[0][::5]
+    idx_tr = np.where(tr)[0]
+    idx_tr = idx_tr[idx_tr + h <= idx_tr.max()][::5]  # 라벨이 학습구간 밖(시험구간)을 보지 않게 퍼지
     Xtr = X[idx_tr].reshape(-1, F); ytr = y[idx_tr].reshape(-1)
     ok = ~np.isnan(ytr) & ~np.isnan(Xtr).any(1)
     Xtr, ytr = Xtr[ok], ytr[ok]

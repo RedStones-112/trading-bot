@@ -17,3 +17,10 @@ scripts/.last_claude_review_date
 rl/data/
 rl/models/
 __pycache__/
+rl/live/state/
+rl/live/logs/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/.idea/

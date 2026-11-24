@@ -23,10 +23,28 @@ class MarketData:
         return MarketData(self.dates[m], self.tickers, self.feats[m], self.rets[m],
                           None if self.elig is None else self.elig[m], self.pit)
 
-def load(path=PATH, ext=False) -> MarketData:
+def load(path=PATH, ext=False, market=None, tickers=None) -> MarketData:
+    """market: 시장특성 parquet 경로(기본은 기간에 따라 자동), tickers: 열 순서 고정(학습 때 종목 순서 재현용)."""
     df = pd.read_parquet(path)
     close = df.pivot(index="date", columns="ticker", values="close").sort_index()
-    vol = df.pivot(index="date", columns="ticker", values="volume").reindex(close.index)
+    if tickers is not None:
+        close = close.reindex(columns=tickers)
+    vol = df.pivot(index="date", columns="ticker", values="volume").reindex(index=close.index, columns=close.columns)
+    elig = None
+    if "eligible" in df.columns:
+        elig = df.pivot(index="date", columns="ticker", values="eligible").reindex(index=close.index, columns=close.columns)
+    mk = None
+    if ext:
+        mpath = market or ("rl/data/market_long.parquet" if close.index[0] < pd.Timestamp("2015-01-01") else "rl/data/market.parquet")
+        mk = pd.read_parquet(mpath)
+    return from_frames(close, vol, elig, mk, ext)
+
+
+def from_frames(close, vol, elig=None, market=None, ext=False) -> MarketData:
+    """메모리 DataFrame으로 특성 계산(parquet/pyarrow 불필요 -- 라즈베리파이/안드로이드 실행기용).
+    close/vol/elig: [날짜 x 티커] (열 순서가 곧 모델의 종목 순서), market: spy/vix 열을 가진 일봉 DataFrame."""
+    close = close.sort_index()
+    vol = vol.reindex(index=close.index, columns=close.columns)
     ret1 = close.pct_change(fill_method=None)
     f = [
         ret1,
@@ -38,8 +56,7 @@ def load(path=PATH, ext=False) -> MarketData:
     ]
     scale = [10, 5, 3, 20, 3, 1]  # 대략적 정규화 후 [-5,5] 클리핑
     if ext:
-        mpath = "rl/data/market_long.parquet" if close.index[0] < pd.Timestamp("2015-01-01") else "rl/data/market.parquet"
-        mk = pd.read_parquet(mpath).reindex(close.index).ffill()
+        mk = market.reindex(close.index).ffill()
         mret = mk.spy.pct_change()
         mkt = [mret, mk.spy.pct_change(20), mret.rolling(20).std(),
                mk.spy / mk.spy.rolling(200).mean() - 1, mk.vix / 20 - 1, mk.vix.pct_change(5)]
@@ -59,8 +76,7 @@ def load(path=PATH, ext=False) -> MarketData:
         feats = np.stack([np.clip(x.values * s, -5, 5) for x, s in zip(f, scale)], axis=-1)
     feats = np.nan_to_num(feats).astype(np.float32)
     rets = np.nan_to_num(ret1.values).astype(np.float32)
-    elig, pit = None, False
-    if "eligible" in df.columns:
-        elig = df.pivot(index="date", columns="ticker", values="eligible").reindex(close.index)
-        elig = elig.fillna(False).values.astype(bool); pit = True
+    pit = elig is not None
+    if pit:
+        elig = elig.reindex(index=close.index, columns=close.columns).fillna(False).values.astype(bool)
     return MarketData(close.index.values, list(close.columns), feats, rets, elig, pit)

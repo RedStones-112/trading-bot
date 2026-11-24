@@ -1,0 +1,5 @@
+# 실행기(rl/live) 전용 -- PyTorch/stable-baselines3/pyarrow 불필요 (라즈베리파이, 안드로이드 공통 코드)
+numpy
+pandas
+requests
+yfinance   # 라즈베리파이/PC 데이터 백엔드. 안드로이드는 --backend kis(=KIS 시세 API)라 불필요

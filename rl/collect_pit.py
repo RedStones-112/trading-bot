@@ -7,7 +7,7 @@ from datetime import date, timedelta
 import numpy as np, pandas as pd, yfinance as yf
 from rl.collect_data import POOL
 
-def main(years=10, out_path="rl/data/us_pit_daily.parquet"):
+def main(years=10, out_path="rl/data/us_pit_daily.parquet", top_n=100):
     html = requests.get("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
                         headers={"User-Agent": "Mozilla/5.0"}, timeout=30).text
     cur = pd.read_html(io.StringIO(html))[0]["Symbol"].str.replace(".", "-", regex=False).tolist()
@@ -27,7 +27,7 @@ def main(years=10, out_path="rl/data/us_pit_daily.parquet"):
         pos = close.index.get_loc(rd)
         score = dv.iloc[max(0, pos - 252):pos].mean()           # rd 이전 데이터만 사용
         n_hist = close.iloc[max(0, pos - 252):pos].notna().sum()
-        top = score[n_hist >= 200].nlargest(100).index          # 직전 1년 거래 이력 충분한 종목만
+        top = score[n_hist >= 200].nlargest(top_n).index          # 직전 1년 거래 이력 충분한 종목만
         nxt = rank_dates[i + 1] if i + 1 < len(rank_dates) else close.index[-1] + pd.Timedelta(days=1)
         elig.loc[(elig.index >= rd) & (elig.index < nxt), top] = True
     union = elig.columns[elig.any()]
@@ -45,4 +45,5 @@ def main(years=10, out_path="rl/data/us_pit_daily.parquet"):
 if __name__ == "__main__":
     import sys
     y = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-    main(y, sys.argv[2]) if len(sys.argv) > 2 else main(y)
+    out = sys.argv[2] if len(sys.argv) > 2 else "rl/data/us_pit_daily.parquet"
+    main(y, out, int(sys.argv[3]) if len(sys.argv) > 3 else 100)
