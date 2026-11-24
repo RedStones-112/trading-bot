@@ -3112,3 +3112,8 @@ portfolio_sim` 전부 클린 빌드 + `test_strategy.exe` 전체 통과를 직�
   리밸런스/장마감 보고 중 KIS 예외, 총자산 0원, 목표비중 계산 실패, 리밸런스 주문 전부 거부 시 "[국내 RL 모의투자]
   오류 -- 확인 필요" 카톡(하루 1회, `rl_alert_date.txt`). 예외 시 20분 뒤 재시도(보고도 동일). mock(초기자금 0)으로
   알림 실제 전송 확인(kakao 200).
+
+## 일일 자동 세션: 11-25 rl 모드 점검 (2026-11-25)
+
+- strategy_mode: "rl", mode: "paper", 	rading_bot.exe 실행 중 아님. 루트와 uild/ 어디에도 l_state.json/l_equity.csv/l_python.log가 아직 없고 	rading.log의 마지막 기록은 11-24 15:35 -- rl 모드 전환 커밋(11-25 00:48) 이후 봇이 한 번도 실행되지 않았다는 뜻이다. 따라서 리밸런스/장마감 보고/수익률 점검 대상 자체가 없어 오늘은 점검할 데이터 없음.
+- 코드/설정 변경 없음(카카오 알림 없음). 작업 트리의 미커밋 변경(src/main.cpp, src/portfolio_sim.cpp, stock_tags.json)은 사용자 작업물로 보고 건드리지 않음. 다음 세션에서 봇 첫 실행 후 l_state.json 생성 여부부터 확인할 것.
