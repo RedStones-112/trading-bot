@@ -502,6 +502,20 @@ int main() {
     double rlMinTradeKrw = cfg.value("rl_min_trade_krw", 200000.0); // 이보다 작은 조정은 생략(회전율 비용)
     double rlMinTradeFrac = cfg.value("rl_min_trade_frac", 0.25);   // 보유/목표의 이 비율 미만 조정도 생략
     int rlReportMinute = cfg.value("rl_report_minute", 15 * 60 + 20);
+    // rl 모드 오류 카톡 알림(하루 1회, rl_alert_date.txt로 중복 방지) -- 모의투자 기간/앱키 만료처럼
+    // 사람이 조치해야 하는 계좌/API 오류를 바로 알기 위함(2026-11-13 계좌 만료로 봇이 며칠 실패한 사례).
+    auto rlAlert = [&](const std::string& what) {
+        if (strategyMode != "rl") return;
+        std::string today = timestamp().substr(0, 10);
+        { std::ifstream f("rl_alert_date.txt"); std::string d; if (f >> d && d == today) return; }
+        std::ofstream("rl_alert_date.txt") << today;
+        std::string msg = "[국내 RL 모의투자] 오류 -- 확인 필요\n" + what +
+            "\n(모의투자 기간 만료/앱키 만료/KIS 장애 가능 -- eFriend 모의투자, KIS Developers에서 계좌 상태 확인)";
+        { std::ofstream f("rl_message.txt", std::ios::binary); f << msg; }
+        std::string cmd = "\"\"" + rlPython + "\" -m rl.live.kr_rl send --file rl_message.txt >> rl_python.log 2>&1\"";
+        std::system(cmd.c_str());
+        log("[RL] 오류 카톡 알림: " + what);
+    };
     // 재학습 시에만 쓰는 긴 일봉 히스토리(스캔용 짧은 히스토리와 별도 조회) 및 라벨링에
     // 쓰는 관측 구간(익절/손절 중 먼저 닿는 쪽으로 라벨) -- 둘 다 사용자별로 바뀔 값이
     // 아니라 config로 안 빼고 여기 상수로 둠(다른 kEventLookaheadDays류와 같은 관례).
@@ -551,11 +565,12 @@ int main() {
     // indefinitely rather than giving up, since this call runs once at startup and the
     // trading loop must not start against a stale/empty view of the account.
     auto retryUntilSuccess = [&](auto&& fn, const std::string& what) {
-        while (true) {
+        for (int fails = 1;; fails++) {
             try {
                 return fn();
             } catch (const std::exception& e) {
                 log(what + " 실패, 재시도: " + e.what());
+                if (fails == 10) rlAlert(what + " 10회 연속 실패: " + e.what());
                 std::this_thread::sleep_for(std::chrono::seconds(3));
             }
         }
@@ -964,7 +979,7 @@ int main() {
         double cash = 0;
         double equity = rlSnapshot(px, cash);
         log("[RL] 리밸런스 시작: 현금 " + krw(cash) + ", 총자산 " + krw(equity));
-        if (equity <= 0) { log("[RL] 총자산 0 -- 계좌 확인 필요"); return false; }
+        if (equity <= 0) { log("[RL] 총자산 0 -- 계좌 확인 필요"); rlAlert("계좌 총자산 0원으로 조회됨"); return false; }
 
         json tg;
         auto readTargets = [&] {
@@ -982,6 +997,7 @@ int main() {
             int rc = rlPy("targets --holdings rl_holdings.json --out rl_targets.json");
             if (rc != 0 || !readTargets()) {
                 log("[RL] 목표비중 계산 실패(rc=" + std::to_string(rc) + ", rl_python.log 확인) -- 나중에 재시도");
+                rlAlert("목표비중 계산 실패(rl_python.log 확인, 데이터 소스 문제 가능)");
                 return false;
             }
         }
@@ -1061,6 +1077,7 @@ int main() {
         }
         if (attempted > 0 && errors == attempted) {
             log("[RL] 주문 전부 거부(휴장일/장운영 문제 가능) -- 나중에 재시도");
+            rlAlert("리밸런스 주문 " + std::to_string(attempted) + "건 전부 거부(휴장일이면 무시, 아니면 계좌 확인)");
             return false;
         }
 
@@ -1135,11 +1152,19 @@ int main() {
                 int nowMin = std::stoi(timestamp().substr(11, 2)) * 60 + std::stoi(timestamp().substr(14, 2));
                 json st = rlLoadState();
                 // 리밸런스는 매월 첫 거래일(그 달에 아직 안 했으면) 1회, 장마감 보고는 매일.
-                if (st.value("rebalanced_month", std::string()) != today.substr(0, 7)) {
-                    if (std::chrono::steady_clock::now() >= rlRetryAt && !rlRebalance(st, today))
-                        rlRetryAt = std::chrono::steady_clock::now() + std::chrono::minutes(20);
-                } else if (nowMin >= rlReportMinute && st.value("reported", std::string()) != today) {
-                    rlReport(st, today);
+                // KIS 조회/주문 예외(계좌 만료 등)는 카톡 알림 후 20분 뒤 재시도.
+                try {
+                    if (std::chrono::steady_clock::now() < rlRetryAt) {
+                    } else if (st.value("rebalanced_month", std::string()) != today.substr(0, 7)) {
+                        if (!rlRebalance(st, today))
+                            rlRetryAt = std::chrono::steady_clock::now() + std::chrono::minutes(20);
+                    } else if (nowMin >= rlReportMinute && st.value("reported", std::string()) != today) {
+                        rlReport(st, today);
+                    }
+                } catch (const std::exception& e) {
+                    log(std::string("[RL] KIS 조회/주문 오류: ") + e.what());
+                    rlAlert(std::string("KIS 조회/주문 오류: ") + e.what());
+                    rlRetryAt = std::chrono::steady_clock::now() + std::chrono::minutes(20);
                 }
                 std::this_thread::sleep_for(std::chrono::seconds(pollSeconds));
                 continue;

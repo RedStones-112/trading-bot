@@ -21,7 +21,41 @@
    `*.bak` 등 런타임/백업 파일은 add하지 않는다. (실행 중인 프로세스를 강제 종료하지 않는다 -- 재시작 시
    미체결 정리/포지션 복원이 자동이라 안전하다는 걸 알고 있어도, 사람 확인 없이는 죽이지 않는다.)
 
-## 매일 할 일 (순서대로)
+3. `config.json`의 `strategy_mode`를 확인한다. **`"rl"`이면 바로 아래 "rl 모드일 때" 절차만
+   따르고, 그 아래 "매일 할 일(scan/focus 모드)"은 건너뛴다.**
+
+## rl 모드일 때 (2026-11-25 사용자 지시로 봇을 강화학습 모델 운용으로 전환)
+
+봇은 `strategy_mode: "rl"`로 코스피/코스닥 시가총액 상위 100(레버리지/ETF 제외)을 RL 모델
+(`rl/live/kr_rl.py`, `rl/live/model/kc_s*.zip`)로 **매월 첫 거래일 1회** 리밸런스하고, 매일 15:20
+장마감 보고를 카톡으로 직접 보낸다(README "투자 방식" `rl` 항목, PROGRESS.md 2026-11-25 항목 참고).
+월 1회 전략이라 매일 손댈 것이 거의 없다 -- **모니터링/장애 대응이 주 업무이고, 전략(모델/유니버스/
+리밸런스 주기/비중 규칙) 변경은 하지 않는다.**
+
+1. **상태 점검(읽기 전용)**: `rl_state.json`(rebalanced/rebalanced_month/reported/base_equity),
+   `rl_equity.csv`(일별 장마감 자산), `rl_python.log` 마지막 부분, `trading.log`의 `[RL]` 줄,
+   `trades-*.log` 이번 달 기록을 읽는다. 확인할 것:
+   - 이번 달 리밸런스가 됐는지(`rebalanced_month`), 오늘(평일) 장마감 보고가 됐는지(`reported`).
+   - 목표비중 계산 실패, 주문 거부/미체결 다수, 카톡 전송 실패 같은 오류.
+   - 누적 수익률(base_equity 대비)과 같은 기간 코스피 수익률(`rl/data/kr_market.parquet` 또는
+     FinanceDataReader `KS11`) 비교 -- 참고용 기록일 뿐, 이걸로 전략을 바꾸지 않는다.
+2. **장애가 있으면 고친다(코드 버그만)**: `rl/live/kr_rl.py`나 `src/main.cpp`의 rl 모드 경로에서
+   재현되는 버그(데이터 소스 응답 형식 변경, 파싱 오류 등)만 고친다. 위 5번 "구현 + 검증"과 같은
+   기준(빌드+`test_strategy` 통과, 임시 디렉토리 `mode: mock` + `strategy_mode: "rl"` 격리
+   드라이런, `python -m rl.live.kr_rl targets`를 임시 holdings/out 경로로 실행해 정상 출력 확인)을
+   통과해야 커밋한다. 원인이 외부(카카오 토큰 만료, KIS 장애, 휴장일 재시도 등)면 코드 수정 없이
+   PROGRESS.md에 기록만 한다.
+3. **연 1회 재선정 알림**: 매년 11/29 이후 첫 거래일에 시총 상위 100이 재선정된다. `rl_tops_extra.json`이
+   생겼거나 `rl_python.log`에 "학습 집합 밖 N종목 -- 재학습 필요"가 보이면, 재수집(`rl/collect_kr_cap.py`)
+   + 재학습이 필요하다는 것을 PROGRESS.md에 기록한다. 재학습/모델 교체는 자동 세션에서 하지 않는다
+   (사용자가 인터랙티브 세션에서 결정).
+4. **PROGRESS.md 기록 + 커밋/푸시**: 아래 6번/7번 관례대로 날짜 섹션을 남긴다(예: `## 일일 자동 세션:
+   MM-DD rl 모드 점검 (YYYY-MM-DD)` -- 리밸런스 여부, 누적/일일 수익률, 코스피 대비, 오류 유무).
+   코드를 고친 날에만 6-1의 카카오 알림을 보낸다(장마감 수익률 보고는 봇이 이미 보내므로 중복 금지).
+   `rl_state.json`/`rl_equity.csv`/`rl_targets.json`/`rl_holdings.json`/`rl_message.txt`/`rl_python.log`/
+   `rl_tops_extra.json`은 런타임 파일이므로 add하지 않고 고치거나 지우지 않는다.
+
+## 매일 할 일 (scan/focus 모드, 순서대로)
 1. **성과 파악**: `trades-*.log`(월별 체결 기록), `performance_report.txt`, `holdings.txt`,
    `trading.log`의 최근 부분을 읽어서 최근 거래 성과(승률, 손익, 특이 패턴)를 파악한다.
 2. **오프라인 백테스트 갱신**: `cmake --build build --target backtest` 후 프로젝트 루트에서
@@ -105,6 +139,8 @@
 - 하루에 서로 다른 전략 변경을 여러 개 동시에 섞지 않는다(원인 분리가 안 되면 다음 날 분석이
   무의미해진다).
 - `git push --force`를 쓰지 않는다.
+- `strategy_mode`를 바꾸지 않는다(rl <-> scan/focus 전환은 사용자만 결정). rl 모드의 모델 파일
+  (`rl/live/model/`), 유니버스(`rl/live/universe_kc100.json`), `rl_*` 설정값도 바꾸지 않는다.
 
 ## 참고
 - 실행 로그는 `scripts/claude_daily.log`에 누적된다.

@@ -24,3 +24,13 @@ mobile/android/build/
 mobile/android/app/build/
 mobile/android/local.properties
 mobile/android/.idea/
+
+# rl 모드 런타임 파일(봇 작업 폴더)
+rl_state.json
+rl_equity.csv
+rl_targets.json
+rl_holdings.json
+rl_message.txt
+rl_python.log
+rl_tops_extra.json
+rl_alert_date.txt
