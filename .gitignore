@@ -14,3 +14,6 @@ build/
 scripts/autostart.log
 scripts/claude_daily.log
 scripts/.last_claude_review_date
+rl/data/
+rl/models/
+__pycache__/

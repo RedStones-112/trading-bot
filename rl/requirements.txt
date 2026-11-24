@@ -1,0 +1,10 @@
+yfinance
+pandas
+pyarrow
+numpy
+requests
+lxml
+gymnasium
+stable-baselines3
+torch
+scikit-learn
