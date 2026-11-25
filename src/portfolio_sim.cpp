@@ -58,12 +58,13 @@ struct SimParams {
     double maxPositionValueFraction = 0.5;
     std::string probabilityMode = "wave";
     double initialCash = 10000000.0;
+    int cooldownDays = 0; // 청산 후 N거래일 동안 같은 종목 재진입 금지(일봉이라 "같은 날"을 직접 못 재현해서 근사)
 
     std::string label() const {
         std::ostringstream s;
         s << "sma" << smaShort << "/" << smaLong << " tp" << std::fixed << std::setprecision(1)
           << takeProfitPct * 100 << "%/sl" << stopLossPct * 100 << "% " << probabilityMode
-          << " cash" << std::setprecision(0) << positionCashFraction * 100 << "% pos" << maxPositions;
+          << " cash" << std::setprecision(0) << positionCashFraction * 100 << "% pos" << maxPositions << " cd" << cooldownDays;
         return s.str();
     }
 };
@@ -133,7 +134,10 @@ SimResult simulate(const std::vector<SymbolSeries>& universe, const SimParams& p
     double cash = p.initialCash;
     std::map<std::string, SimPosition> positions;
 
+    std::map<std::string, int> lastExitIdx;
+    int dayIdx = -1;
     for (auto& date : calendar) {
+        dayIdx++;
         // Phase A: monitor held positions, exit on take-profit/stop-loss/confirmed dead-cross.
         std::map<std::string, double> heldEv;
         std::vector<std::string> toClose;
@@ -187,7 +191,7 @@ SimResult simulate(const std::vector<SymbolSeries>& universe, const SimParams& p
                 toClose.push_back(code);
             }
         }
-        for (auto& c : toClose) { positions.erase(c); heldEv.erase(c); }
+        for (auto& c : toClose) { positions.erase(c); heldEv.erase(c); lastExitIdx[c] = dayIdx; }
 
         // Phase B: scan every symbol with a golden cross today (held or not -- a held symbol
         // whose signal is still Buy is eligible for a top-up, same as main.cpp).
@@ -225,6 +229,10 @@ SimResult simulate(const std::vector<SymbolSeries>& universe, const SimParams& p
         bool evictedThisCycle = false;
         for (auto& cand : cands) {
             bool alreadyHeld = positions.count(cand.code) > 0;
+            if (!alreadyHeld && p.cooldownDays > 0) {
+                auto lx = lastExitIdx.find(cand.code);
+                if (lx != lastExitIdx.end() && dayIdx - lx->second < p.cooldownDays) continue;
+            }
             bool canAct = alreadyHeld || (int)positions.size() < p.maxPositions;
             if (!canAct) {
                 if (evictedThisCycle || heldEv.empty()) continue;
@@ -238,6 +246,7 @@ SimResult simulate(const std::vector<SymbolSeries>& universe, const SimParams& p
                     result.trades++;
                     if (netPct >= 0) result.wins++; else result.losses++;
                     if (tradeLog) tradeLog->push_back({worstIt->first, netPct, worstPos.avgBuyPrice * worstPos.qty * netPct});
+                    lastExitIdx[worstIt->first] = dayIdx;
                     positions.erase(worstIt->first);
                     heldEv.erase(worstIt->first);
                     evictedThisCycle = true;
@@ -494,6 +503,30 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // 고정 후보 평가: cv와 같은 5겹 분할(시드 7)에서, 미리 정한 TP/SL 후보를 fold마다 그대로
+    // 돌려 fold별 편차를 봄(2026-10-21). 후보는 fold 안에서 고르지 않으므로 선택편향은 없지만,
+    // 후보 자체는 train/hold-out 단일 실행을 보고 정했다는 점에 주의.
+    if (argc > 2 && std::string(argv[2]) == "fixedcv") {
+        auto folds = makeFolds(withEnoughHistory, 5, 7);
+        std::vector<std::pair<double, double>> cands = {
+            {0.03, 0.03}, {0.05, 0.03}, {0.06, 0.04}, {0.08, 0.05}, {0.10, 0.05}, {0.10, 0.07}, {0.15, 0.05}
+        };
+        for (auto& [tp, slp] : cands) {
+            SimParams p = base;
+            p.smaShort = 8; p.smaLong = 30; p.probabilityMode = "basic";
+            p.takeProfitPct = tp; p.stopLossPct = slp;
+            std::cout << "[" << p.label() << "]\n  fold별 증가율:";
+            double sum = 0, mn = 1e9; int pos = 0;
+            for (int f = 0; f < 5; f++) {
+                auto r = simulate(loadUniverse(folds[f], targetDays), p);
+                std::cout << " " << std::fixed << std::setprecision(1) << r.growthPct << "%";
+                sum += r.growthPct; mn = std::min(mn, r.growthPct); if (r.growthPct > 0) pos++;
+            }
+            std::cout << "\n  평균 " << sum / 5 << "%, 최저 " << mn << "%, 플러스 fold " << pos << "/5\n";
+        }
+        return 0;
+    }
+
     if (argc > 2 && std::string(argv[2]) == "cv") {
         runCrossValidation(withEnoughHistory, base, years, targetDays);
         return 0;
@@ -565,6 +598,7 @@ int main(int argc, char** argv) {
         p.takeProfitPct = std::stod(argv[5]);
         if (argc > 6) p.stopLossPct = std::stod(argv[6]);
         if (argc > 7) p.probabilityMode = argv[7];
+        if (argc > 8) p.cooldownDays = std::stoi(argv[8]);
         printResult("[train]  ", p, simulate(trainUniverse, p));
         printResult("[holdout]", p, simulate(holdoutUniverse, p));
         return 0;

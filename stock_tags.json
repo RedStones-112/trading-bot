@@ -131,6 +131,22 @@
       "전기·전자"
     ]
   },
+  "010580": {
+    "lastUpdated": "2026-10-14",
+    "name": "에스엠벡셀",
+    "parentCompany": "",
+    "tags": [
+      "운송장비·부품"
+    ]
+  },
+  "011080": {
+    "lastUpdated": "2026-10-14",
+    "name": "형지I&C",
+    "parentCompany": "",
+    "tags": [
+      "섬유·의류"
+    ]
+  },
   "011230": {
     "lastUpdated": "2026-09-11",
     "name": "삼화전자",
@@ -155,12 +171,28 @@
       "유통"
     ]
   },
+  "012340": {
+    "lastUpdated": "2026-10-15",
+    "name": "뉴인텍",
+    "parentCompany": "",
+    "tags": [
+      "운송장비·부품"
+    ]
+  },
   "013700": {
     "lastUpdated": "2026-09-01",
     "name": "까뮤이앤씨",
     "parentCompany": "",
     "tags": [
       "건설"
+    ]
+  },
+  "013810": {
+    "lastUpdated": "2026-10-23",
+    "name": "스페코",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
     ]
   },
   "014940": {
@@ -177,6 +209,14 @@
     "parentCompany": "",
     "tags": [
       "종이·목재"
+    ]
+  },
+  "015260": {
+    "lastUpdated": "2026-10-16",
+    "name": "에이엔피",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
     ]
   },
   "015760": {
@@ -233,6 +273,14 @@
     "parentCompany": "",
     "tags": [
       "유통"
+    ]
+  },
+  "024740": {
+    "lastUpdated": "2026-10-23",
+    "name": "한일단조",
+    "parentCompany": "",
+    "tags": [
+      "운송장비·부품"
     ]
   },
   "024840": {
@@ -299,6 +347,14 @@
       "화학"
     ]
   },
+  "030960": {
+    "lastUpdated": "2026-10-13",
+    "name": "양지사",
+    "parentCompany": "",
+    "tags": [
+      "출판·매체복제"
+    ]
+  },
   "032820": {
     "lastUpdated": "2026-08-05",
     "name": "우리기술",
@@ -356,6 +412,14 @@
     "parentCompany": "",
     "tags": [
       "비금속"
+    ]
+  },
+  "039980": {
+    "lastUpdated": "2026-10-23",
+    "name": "폴라리스AI",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
     ]
   },
   "041020": {
@@ -421,6 +485,22 @@
     "parentCompany": "",
     "tags": [
       "화학"
+    ]
+  },
+  "048470": {
+    "lastUpdated": "2026-10-14",
+    "name": "대동스틸",
+    "parentCompany": "",
+    "tags": [
+      "유통"
+    ]
+  },
+  "048530": {
+    "lastUpdated": "2026-10-20",
+    "name": "인트론바이오",
+    "parentCompany": "",
+    "tags": [
+      "제약"
     ]
   },
   "048770": {
@@ -551,6 +631,14 @@
       "기계·장비"
     ]
   },
+  "079650": {
+    "lastUpdated": "2026-10-14",
+    "name": "서산",
+    "parentCompany": "",
+    "tags": [
+      "비금속"
+    ]
+  },
   "080220": {
     "lastUpdated": "2026-09-22",
     "name": "제주반도체",
@@ -665,6 +753,22 @@
       "기계·장비"
     ]
   },
+  "099520": {
+    "lastUpdated": "2026-10-21",
+    "name": "DGI",
+    "parentCompany": "",
+    "tags": [
+      "전기·전자"
+    ]
+  },
+  "100250": {
+    "lastUpdated": "2026-10-23",
+    "name": "진양홀딩스",
+    "parentCompany": "",
+    "tags": [
+      "화학"
+    ]
+  },
   "100590": {
     "lastUpdated": "2026-09-09",
     "name": "머큐리",
@@ -729,6 +833,14 @@
       "운송장비·부품"
     ]
   },
+  "138360": {
+    "lastUpdated": "2026-10-23",
+    "name": "앤로보틱스",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
+    ]
+  },
   "142280": {
     "lastUpdated": "2026-08-24",
     "name": "녹십자엠에스",
@@ -777,6 +889,14 @@
       "전기·전자"
     ]
   },
+  "199730": {
+    "lastUpdated": "2026-10-14",
+    "name": "바이오인프라",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
+    ]
+  },
   "205100": {
     "lastUpdated": "2026-09-21",
     "name": "엑셈",
@@ -799,6 +919,14 @@
     "parentCompany": "",
     "tags": [
       "건설"
+    ]
+  },
+  "206560": {
+    "lastUpdated": "2026-10-22",
+    "name": "덱스터",
+    "parentCompany": "",
+    "tags": [
+      "오락·문화"
     ]
   },
   "215790": {
@@ -847,6 +975,22 @@
     "parentCompany": "",
     "tags": [
       "의료·정밀기기"
+    ]
+  },
+  "241690": {
+    "lastUpdated": "2026-10-20",
+    "name": "유니테크노",
+    "parentCompany": "",
+    "tags": [
+      "운송장비·부품"
+    ]
+  },
+  "250930": {
+    "lastUpdated": "2026-10-14",
+    "name": "예선테크",
+    "parentCompany": "",
+    "tags": [
+      "화학"
     ]
   },
   "253840": {
@@ -905,6 +1049,22 @@
       "일반서비스"
     ]
   },
+  "288980": {
+    "lastUpdated": "2026-10-16",
+    "name": "모아데이타",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
+  "289220": {
+    "lastUpdated": "2026-10-20",
+    "name": "자이언트스텝",
+    "parentCompany": "",
+    "tags": [
+      "오락·문화"
+    ]
+  },
   "290560": {
     "lastUpdated": "2026-09-21",
     "name": "파라택시스이더리움",
@@ -927,6 +1087,46 @@
     "parentCompany": "",
     "tags": [
       "일반서비스"
+    ]
+  },
+  "300080": {
+    "lastUpdated": "2026-10-21",
+    "name": "플리토",
+    "parentCompany": "",
+    "tags": [
+      "IT 서비스"
+    ]
+  },
+  "302550": {
+    "lastUpdated": "2026-10-12",
+    "name": "리메드",
+    "parentCompany": "",
+    "tags": [
+      "의료·정밀기기"
+    ]
+  },
+  "308100": {
+    "lastUpdated": "2026-10-13",
+    "name": "형지글로벌",
+    "parentCompany": "",
+    "tags": [
+      "유통"
+    ]
+  },
+  "317240": {
+    "lastUpdated": "2026-10-16",
+    "name": "TS트릴리온",
+    "parentCompany": "",
+    "tags": [
+      "화학"
+    ]
+  },
+  "317850": {
+    "lastUpdated": "2026-10-22",
+    "name": "대모",
+    "parentCompany": "",
+    "tags": [
+      "기계·장비"
     ]
   },
   "319400": {
@@ -1087,6 +1287,14 @@
     "parentCompany": "",
     "tags": [
       "기계·장비"
+    ]
+  },
+  "458350": {
+    "lastUpdated": "2026-10-20",
+    "name": "에스팀",
+    "parentCompany": "",
+    "tags": [
+      "일반서비스"
     ]
   },
   "460860": {
