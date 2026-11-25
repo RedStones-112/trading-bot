@@ -60,15 +60,6 @@ void KisClient::authenticate() {
     accessToken_ = j.at("access_token").get<std::string>();
 }
 
-std::string KisClient::hashKey(const std::string& jsonBody) {
-    std::string headers = "Content-Type: application/json\r\n"
-                           "appkey: " + appkey_ + "\r\n"
-                           "appsecret: " + appsecret_;
-    auto resp = http::request(host_, port_, L"/uapi/hashkey", "POST", headers, jsonBody);
-    if (resp.status != 200) throw std::runtime_error("hashkey failed: HTTP " + std::to_string(resp.status) + " " + resp.body);
-    return json::parse(resp.body).at("HASH").get<std::string>();
-}
-
 std::string KisClient::request(const std::string& path, const std::string& method,
                                 const std::string& trId, const std::string& queryOrBody, bool isQuery) {
     if (accessToken_.empty()) throw std::runtime_error("call authenticate() first");
@@ -86,12 +77,22 @@ std::string KisClient::request(const std::string& path, const std::string& metho
         wpath += L"?" + toWide(queryOrBody);
     } else {
         body = queryOrBody;
-        headers += "\r\nhashkey: " + hashKey(body);
+        // hashkey 헤더는 KIS가 폐지(EGW00318 "Hashkey는 더이상 사용하지 않습니다") -- /uapi/hashkey
+        // 호출이 500을 내며 모든 POST 주문이 실패하던 문제(2026-11-25)로 제거.
     }
 
-    auto resp = http::request(host_, port_, wpath, method, headers, body);
-    if (resp.status != 200) throw std::runtime_error("KIS API error: HTTP " + std::to_string(resp.status) + " " + resp.body);
-    return resp.body;
+    // 초당 거래건수 초과(EGW00201/EGW00215)는 KIS가 요청을 처리하지 않고 거부한 것이라(주문도 접수 안 됨)
+    // 재시도해도 중복 주문 위험이 없음 -- 모의투자에서 1.1초 간격으로도 간헐적으로 나서(2026-11-25 봇 시작
+    // 직후 잔고조회가 매번 걸려 rl 리밸런스가 20분씩 밀림) 여기서 짧게 백오프 재시도.
+    for (int attempt = 1;; attempt++) {
+        auto resp = http::request(host_, port_, wpath, method, headers, body);
+        if (resp.status == 200) return resp.body;
+        bool rateLimited = resp.body.find("EGW00201") != std::string::npos ||
+                           resp.body.find("EGW00215") != std::string::npos;
+        if (!rateLimited || attempt >= 5)
+            throw std::runtime_error("KIS API error: HTTP " + std::to_string(resp.status) + " " + resp.body);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500 * attempt));
+    }
 }
 
 double KisClient::getCurrentPrice(const std::string& code) {

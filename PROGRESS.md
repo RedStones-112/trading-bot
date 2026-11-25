@@ -3127,3 +3127,12 @@ portfolio_sim` 전부 클린 빌드 + `test_strategy.exe` 전체 통과를 직�
 - 09:00 rl 첫 리밸런스 시도가 KIS 초당 거래건수 초과(EGW00201)로 실패 → 오류 카톡 발송, 20분 뒤 재시도. 시작 직후
   보유종목 조회와 rlSnapshot의 getHoldings 사이에 apiPause가 없어 연속 호출된 것으로 추정. 일시적 레이트리밋은 알림
   없이 짧게 재시도하도록 바꾸는 안을 제안만 하고 미적용(`src/main.cpp` 기존 미커밋 변경과 섞임 + 재빌드/재시작 필요).
+## KIS Hashkey 폐지 대응 + 초당 거래건수 초과 자동 재시도 (2026-11-25, 인터랙티브 세션)
+
+- rl 첫 리밸런스(10:06~10:07) 매수 주문이 전부 `hashkey failed: EGW00318 "Hashkey는 더이상 사용하지 않습니다"`로
+  실패(주문 0건 체결, 계좌 빈 상태 유지). KIS가 hashkey를 폐지 -- `src/kis_client.cpp`에서 `/uapi/hashkey` 호출과
+  `hashkey` 헤더 제거(`hashKey()` 삭제).
+- 봇 시작 직후 잔고조회가 매번 EGW00201/EGW00215(초당 거래건수 초과)에 걸려 rl 리밸런스가 20분씩 밀림 --
+  `KisClient::request()`에서 이 두 코드만 1.5s*n 백오프로 최대 5회 재시도(거부된 요청이라 주문 중복 위험 없음).
+- 빌드/`test_strategy` 통과 후(작업 트리의 미커밋 main.cpp/portfolio_sim.cpp 변경은 빼고 빌드) 사용자 지시로 봇 재시작
+  (10:25 hashkey 수정본, 10:38 재시도 수정본). 실제 주문 체결 여부는 재시작 후 리밸런스 로그로 확인할 것.

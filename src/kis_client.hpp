@@ -35,7 +35,6 @@ private:
     std::string request(const std::string& path, const std::string& method,
                          const std::string& trId, const std::string& queryOrBody,
                          bool isQuery);
-    std::string hashKey(const std::string& jsonBody);
 
     std::string appkey_, appsecret_, cano_, acntPrdtCd_;
     std::wstring host_;
