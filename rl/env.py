@@ -6,10 +6,20 @@ import numpy as np
 from gymnasium import spaces
 from rl import ddctl
 
+
+def topk_mask(logits, k):
+    """logits[:-1](종목) 중 상위 k개만 남기고 나머지는 -1e9. 마지막(현금)은 그대로. 운영(kr_rl)과 공유."""
+    a = np.array(logits, np.float64, copy=True)
+    s = a[:-1]
+    if 0 < k < s.size:
+        s[np.argpartition(-s, k)[k:]] = -1e9
+    return a
+
 class PortfolioEnv(gym.Env):
     def __init__(self, data, window=10, cost_bps=5.0, episode_len=None, random_start=False,
                  turnover_penalty=0.0, smooth=0.0, anchor_scale=0.0, mask_feats=False,
-                 dd_limit=0.0, dd_mult=4.0, rebalance_every=1):
+                 dd_limit=0.0, dd_mult=4.0, rebalance_every=1, top_k=0):
+        self.top_k = int(top_k)  # 0이면 전 종목 softmax(기존), K>0이면 상위 K종목만 보유
         self.k = max(1, int(rebalance_every))  # 한 step = k거래일(첫날만 리밸런스, 나머지는 보유하며 drift)
         self.mask_feats = mask_feats
         self.dd_limit, self.dd_mult = dd_limit, dd_mult  # 낙폭 제어 오버레이(rl/ddctl.py), 0이면 끔
@@ -56,6 +66,8 @@ class PortfolioEnv(gym.Env):
             a = base + self.anchor * a
         if self.d.pit:  # 해당 시점 상위100이 아닌 종목은 거래 불가(비중 0)
             a = a.copy(); a[:-1][~self.d.elig[self.t]] = -1e9
+        if self.top_k:  # 집중 투자: 점수 상위 K종목만 남기고(현금은 항상 후보) 그 안에서 softmax
+            a = topk_mask(a, self.top_k)
         e = np.exp(a - a.max()); nw = (e / e.sum()).astype(np.float32)
         if self.smooth > 0:
             nw = (self.smooth * self.w + (1 - self.smooth) * nw).astype(np.float32)

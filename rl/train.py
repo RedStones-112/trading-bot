@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--anchor", type=float, default=0.0)
     ap.add_argument("--rebalance-every", type=int, default=1, help="리밸런스 주기(거래일), 월 1회 = 21")
     ap.add_argument("--policy", choices=["mlp", "shared"], default="mlp")
+    ap.add_argument("--top-k", type=int, default=0, help="점수 상위 K종목만 보유(0 = 전 종목 softmax)")
     a = ap.parse_args()
 
     train = (load(a.data or PATH0, ext=a.ext, market=a.market)).split(a.train_start, a.train_end or None)
@@ -35,7 +36,7 @@ def main():
         def f():
             e = PortfolioEnv(train, random_start=True, episode_len=252, cost_bps=a.cost_bps,
                              turnover_penalty=a.turnover_penalty, smooth=a.smooth, anchor_scale=a.anchor, mask_feats=a.mask_feats,
-                             dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=a.rebalance_every)
+                             dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=a.rebalance_every, top_k=a.top_k)
             e.reset(seed=a.seed + i)
             return Monitor(e)
         return f

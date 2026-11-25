@@ -127,6 +127,14 @@ static std::string krw(double v) {
     return std::to_string((long long)std::llround(v)) + "원";
 }
 
+// 카톡 메시지용 천 단위 쉼표(1,234,567원). 로그/trades.log는 기존 krw() 형식 유지.
+static std::string krwc(double v) {
+    long long n = std::llround(v);
+    std::string s = std::to_string(n < 0 ? -n : n);
+    for (int i = (int)s.size() - 3; i > 0; i -= 3) s.insert(i, ",");
+    return (n < 0 ? "-" : "") + s + "원";
+}
+
 static std::string signalStr(Signal s) {
     return s == Signal::Buy ? "BUY" : s == Signal::Sell ? "SELL" : "HOLD";
 }
@@ -1035,15 +1043,28 @@ int main() {
         }
         log("[RL] 계획: 매도 " + std::to_string(sells.size()) + "건, 매수 " + std::to_string(buys.size()) + "건");
 
+        // 종목명: 매도는 계좌 잔고의 이름, 매수는 rl_targets.json의 names(KIS 모의투자 현재가 API는 이름을 안 줌)
+        auto nameOf = [&](const std::string& c) {
+            if (held.count(c) && !held[c].name.empty() && held[c].name != c) return held[c].name;
+            if (tg.contains("names") && tg["names"].contains(c)) return tg["names"][c].get<std::string>();
+            return c;
+        };
+        // 카톡 표 한 줄: 종목 | 수량 | 가격 | 금액 (가격 = 주문 직전 조회가, 시장가라 실제 체결가와 약간 다를 수 있음)
+        auto row = [&](const std::string& name, int q, int planned, double price) {
+            return name + " | " + std::to_string(q) + "주" +
+                   (q < planned ? "(" + std::to_string(q) + "/" + std::to_string(planned) + ")" : "") +
+                   " | " + krwc(price) + " | " + krwc(price * q);
+        };
         std::vector<std::string> sold, bought, failed;
+        double soldAmt = 0, boughtAmt = 0;
         int attempted = 0, errors = 0;
         for (auto& o : sells) {
             attempted++;
             Position p = held[o.code];
+            p.name = nameOf(o.code);
             try {
                 int q = sellPosition(p, o.price, "RL리밸런스", -o.delta);
-                if (q > 0) sold.push_back(p.name + " " + std::to_string(q) + "주" +
-                                          (q < -o.delta ? "(부분 " + std::to_string(q) + "/" + std::to_string(-o.delta) + ")" : ""));
+                if (q > 0) { sold.push_back(row(p.name, q, -o.delta, o.price)); soldAmt += q * o.price; }
                 else failed.push_back(p.name + " 매도 미체결");
             } catch (const std::exception& e) {
                 errors++; failed.push_back(p.name + " 매도 실패");
@@ -1057,16 +1078,14 @@ int main() {
         for (auto& o : buys) {
             double unit = o.price * (1 + feeRate) * 1.005; // 시장가 체결 슬리피지 여유
             int q = std::min(o.delta, (int)std::floor(cash / unit));
-            if (q < 1) { failed.push_back(o.code + " 현금 부족"); continue; }
+            if (q < 1) { failed.push_back(nameOf(o.code) + " 현금 부족"); continue; }
             attempted++;
-            std::string name = o.code;
+            std::string name = nameOf(o.code);
             try {
-                name = client->getStockName(o.code);
-                std::this_thread::sleep_for(apiPause);
                 int f = buyIntoPosition(o.code, name, o.price, q, "RL리밸런스");
                 if (f > 0) {
-                    bought.push_back(name + " " + std::to_string(f) + "주" +
-                                     (f < q ? "(부분 " + std::to_string(f) + "/" + std::to_string(q) + ")" : ""));
+                    bought.push_back(row(name, f, q, o.price));
+                    boughtAmt += f * o.price;
                     cash -= f * unit;
                 } else failed.push_back(name + " 매수 미체결");
             } catch (const std::exception& e) {
@@ -1088,15 +1107,22 @@ int main() {
         st["trades"] = {{"sold", sold}, {"bought", bought}, {"failed", failed}};
         rlSaveState(st);
 
-        auto join = [](const std::vector<std::string>& v) {
-            std::string s; for (auto& x : v) s += (s.empty() ? "" : ", ") + x; return s.empty() ? "-" : s;
+        auto table = [](const std::vector<std::string>& v) {
+            if (v.empty()) return std::string("-\n");
+            std::string s = "종목 | 수량 | 가격 | 금액\n";
+            for (auto& x : v) s += x + "\n";
+            return s;
         };
-        std::string msg = "[국내 RL 모의투자] " + today + " 리밸런스 (기준 종가 " + tg.value("asof", std::string("?")) + ")\n" +
-            "총자산 " + krw(equity) + " (리밸런스 전)\n" +
-            "매도 " + std::to_string(sold.size()) + "건: " + join(sold) + "\n" +
-            "매수 " + std::to_string(bought.size()) + "건: " + join(bought) +
-            (failed.empty() ? "" : "\n미체결/실패 " + std::to_string(failed.size()) + "건: " + join(failed)) +
-            "\n목표 " + std::to_string(w.size()) + "종목, 현금비중 " + pct(tg.value("cash_weight", 0.0));
+        std::string msg = "[국내 RL 모의투자] " + today + " 리밸런스\n" +
+            "기준 종가 " + tg.value("asof", std::string("?")) + " / 총자산 " + krwc(equity) + " (리밸런스 전)\n\n" +
+            "■ 매도 " + std::to_string(sold.size()) + "건 (" + krwc(soldAmt) + ")\n" + table(sold) + "\n" +
+            "■ 매수 " + std::to_string(bought.size()) + "건 (" + krwc(boughtAmt) + ")\n" + table(bought);
+        if (!failed.empty()) {
+            msg += "\n■ 미체결/실패 " + std::to_string(failed.size()) + "건\n";
+            for (auto& x : failed) msg += x + "\n";
+        }
+        msg += "\n목표 " + std::to_string(w.size()) + "종목, 현금비중 " + pct(tg.value("cash_weight", 0.0)) +
+               "\n(가격 = 주문 직전 조회가, 시장가 체결가와 약간 다를 수 있음)";
         log(msg);
         rlNotify(msg);
         return true;

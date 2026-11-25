@@ -117,7 +117,9 @@ def targets(holdings_path, out_path):
 
     res = {"generated": str(today), "asof": str(asof), "models": [os.path.basename(p) for p in paths],
            "eligible": int(elig.sum()), "fetch_failed": bad, "cash_weight": round(float(tw[-1]), 6),
-           "weights": {c: round(float(x), 6) for c, x in zip(tickers, tw[:-1]) if x > 1e-4}}
+           "weights": {c: round(float(x), 6) for c, x in zip(tickers, tw[:-1]) if x > 1e-4},
+           # 카톡 리밸런스 메시지용 종목명(KIS 모의투자 현재가 API는 종목명을 안 줌)
+           "names": {c: uni["names"].get(c, c) for c in tickers}}
     json.dump(res, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"targets asof={asof} eligible={res['eligible']} names={len(res['weights'])} cash={tw[-1]:.3f} "
           f"failed={len(bad)} models={len(paths)}")

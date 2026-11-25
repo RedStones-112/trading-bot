@@ -44,6 +44,7 @@ def main():
     ap.add_argument("--ext", action="store_true")
     ap.add_argument("--anchor", type=float, default=0.0)
     ap.add_argument("--rebalance-every", type=int, default=1)
+    ap.add_argument("--top-k", type=int, default=0)
     a = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
 
@@ -77,9 +78,15 @@ def main():
             c = cap[10 + i] * (data.elig[10 + i] if data.pit else 1)
             return np.append(c / c.sum(), 0.0)
         policies[f"시총가중 {k}일리밸"] = lambda o, i: logit(capw(i))
+        if a.top_k:  # 집중 PPO와 같은 종목수의 단순 기준: 시총 상위 K 동일비중
+            def capk(i):
+                c = cap[10 + i] * (data.elig[10 + i] if data.pit else 1)
+                w = np.zeros(N + 1); w[np.argsort(-c)[:a.top_k]] = 1.0 / a.top_k
+                return w
+            policies[f"시총상위{a.top_k} 동일비중 {k}일리밸"] = lambda o, i: logit(capk(i))
     penv = PortfolioEnv(data, cost_bps=a.cost_bps, episode_len=None, random_start=False,
                         turnover_penalty=a.turnover_penalty, smooth=a.smooth, anchor_scale=a.anchor, mask_feats=a.mask_feats,
-                             dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=k)
+                             dd_limit=a.dd_limit, dd_mult=a.dd_mult, rebalance_every=k, top_k=a.top_k)
     if os.path.exists(a.model):
         from stable_baselines3 import PPO
         m = PPO.load(a.model)
