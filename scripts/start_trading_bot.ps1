@@ -31,6 +31,24 @@ try {
         exit 0
     }
 
+    # Ensure kakao_bridge (127.0.0.1:8765) is up so the bot / daily review can send KakaoTalk notices.
+    # Failure here must never block the bot start.
+    try {
+        $bridgeUp = $false
+        try { $bridgeUp = ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8765/health" -TimeoutSec 3).StatusCode -eq 200) } catch {}
+        if ($bridgeUp) {
+            Write-Log "kakao_bridge already up"
+        } else {
+            $bridgeDir = "C:\Users\wogur\OneDrive\Desktop\project\kakao_bridge"
+            Start-Process -FilePath (Join-Path $bridgeDir ".venv\Scripts\python.exe") `
+                -ArgumentList "-m","uvicorn","app.main:app","--port","8765","--host","127.0.0.1" `
+                -WorkingDirectory $bridgeDir -WindowStyle Hidden
+            Write-Log "Started kakao_bridge"
+        }
+    } catch {
+        Write-Log "kakao_bridge start failed: $($_.Exception.Message)"
+    }
+
     $running = Get-Process -Name "trading_bot" -ErrorAction SilentlyContinue
     if ($running) {
         Write-Log "Already running (PID $($running.Id)) -- skipping"

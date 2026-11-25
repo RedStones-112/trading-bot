@@ -3117,3 +3117,13 @@ portfolio_sim` 전부 클린 빌드 + `test_strategy.exe` 전체 통과를 직�
 
 - strategy_mode: "rl", mode: "paper", 	rading_bot.exe 실행 중 아님. 루트와 uild/ 어디에도 l_state.json/l_equity.csv/l_python.log가 아직 없고 	rading.log의 마지막 기록은 11-24 15:35 -- rl 모드 전환 커밋(11-25 00:48) 이후 봇이 한 번도 실행되지 않았다는 뜻이다. 따라서 리밸런스/장마감 보고/수익률 점검 대상 자체가 없어 오늘은 점검할 데이터 없음.
 - 코드/설정 변경 없음(카카오 알림 없음). 작업 트리의 미커밋 변경(src/main.cpp, src/portfolio_sim.cpp, stock_tags.json)은 사용자 작업물로 보고 건드리지 않음. 다음 세션에서 봇 첫 실행 후 l_state.json 생성 여부부터 확인할 것.
+## 봇 자동 시작 시 kakao_bridge도 함께 기동 (2026-11-25, 인터랙티브 세션)
+
+- 증상: 11-25 아침 카톡 미수신 -- 봇은 장 시간 외(07:31/07:57 로그온 트리거)라 정상적으로 건너뛰었고, kakao_bridge
+  (`127.0.0.1:8765`)가 꺼져 있었음(재부팅 후 자동 시작 수단 없음).
+- `scripts/start_trading_bot.ps1`(사용자 지시로 수정): 장 시간 체크 통과 후 `/health` 확인, 응답 없으면 kakao_bridge
+  uvicorn을 숨김 창으로 기동. 실패해도 봇 시작은 막지 않고 `autostart.log`에 기록. 09:00 트리거에서 "kakao_bridge
+  already up" 로그 확인(수동 기동 상태였음).
+- 09:00 rl 첫 리밸런스 시도가 KIS 초당 거래건수 초과(EGW00201)로 실패 → 오류 카톡 발송, 20분 뒤 재시도. 시작 직후
+  보유종목 조회와 rlSnapshot의 getHoldings 사이에 apiPause가 없어 연속 호출된 것으로 추정. 일시적 레이트리밋은 알림
+  없이 짧게 재시도하도록 바꾸는 안을 제안만 하고 미적용(`src/main.cpp` 기존 미커밋 변경과 섞임 + 재빌드/재시작 필요).
