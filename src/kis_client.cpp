@@ -41,6 +41,17 @@ std::string dateBefore(const std::string& yyyymmdd, int daysBack) {
     oss << std::put_time(&out, "%Y%m%d");
     return oss.str();
 }
+
+// 연속조회 키(CTX_AREA_*)는 공백/특수문자가 섞여 있어 그대로 쿼리에 넣을 수 없음
+std::string urlEncode(const std::string& s) {
+    std::ostringstream o;
+    o << std::hex << std::uppercase << std::setfill('0');
+    for (unsigned char c : s) {
+        if (std::isalnum(c)) o << c;
+        else o << '%' << std::setw(2) << (int)c;
+    }
+    return o.str();
+}
 }
 
 KisClient::KisClient(std::string appkey, std::string appsecret,
@@ -61,7 +72,8 @@ void KisClient::authenticate() {
 }
 
 std::string KisClient::request(const std::string& path, const std::string& method,
-                                const std::string& trId, const std::string& queryOrBody, bool isQuery) {
+                                const std::string& trId, const std::string& queryOrBody, bool isQuery,
+                                std::string* trCont) {
     if (accessToken_.empty()) throw std::runtime_error("call authenticate() first");
 
     std::string headers = "Content-Type: application/json\r\n"
@@ -70,6 +82,7 @@ std::string KisClient::request(const std::string& path, const std::string& metho
                            "appsecret: " + appsecret_ + "\r\n"
                            "tr_id: " + trId + "\r\n"
                            "custtype: P";
+    if (trCont && !trCont->empty()) headers += "\r\ntr_cont: " + *trCont;
 
     std::wstring wpath = toWide(path);
     std::string body;
@@ -86,7 +99,10 @@ std::string KisClient::request(const std::string& path, const std::string& metho
     // 직후 잔고조회가 매번 걸려 rl 리밸런스가 20분씩 밀림) 여기서 짧게 백오프 재시도.
     for (int attempt = 1;; attempt++) {
         auto resp = http::request(host_, port_, wpath, method, headers, body);
-        if (resp.status == 200) return resp.body;
+        if (resp.status == 200) {
+            if (trCont) *trCont = resp.trCont;
+            return resp.body;
+        }
         bool rateLimited = resp.body.find("EGW00201") != std::string::npos ||
                            resp.body.find("EGW00215") != std::string::npos;
         if (!rateLimited || attempt >= 5)
@@ -243,24 +259,37 @@ std::vector<HeldStock> KisClient::getHoldings() {
     // 잔고조회 -- lists everything currently held in the account, independent of
     // whatever this process remembers locally. Used at startup to recover positions
     // bought in a previous run. Field names are a best guess from docs; verify against
-    // a live paper-account call. Not paginated (CTX_AREA_*100 left blank) -- fine for
-    // this bot's small position counts, but a very large account could be truncated.
+    // a live paper-account call.
+    // 한 번에 일부 행만 줌(모의투자 20행 확인, 2026-11-27) -- 응답 헤더 tr_cont가 F/M이면
+    // ctx_area_fk100/nk100을 넘겨 다음 페이지를 이어 받아야 함. 안 그러면 21번째 종목부터 누락됨.
     std::string trId = paper_ ? "VTTC8434R" : "TTTC8434R";
-    std::string query = "CANO=" + cano_ + "&ACNT_PRDT_CD=" + acntPrdtCd_ +
-                         "&AFHR_FLPR_YN=N&OFL_YN=&INQR_DVSN=02&UNPR_DVSN=01"
-                         "&FUND_STTL_ICLD_YN=N&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00"
-                         "&CTX_AREA_FK100=&CTX_AREA_NK100=";
-    auto body = request("/uapi/domestic-stock/v1/trading/inquire-balance", "GET", trId, query, true);
-    auto j = json::parse(body);
-
     std::vector<HeldStock> result;
-    for (auto& row : j.at("output1")) {
-        int qty = std::stoi(row.value("hldg_qty", "0"));
-        if (qty <= 0) continue; // KIS keeps zero-qty rows for stocks fully sold earlier
-        result.push_back({row.value("pdno", ""), row.value("prdt_name", ""), qty,
-                           std::stod(row.value("pchs_avg_pric", "0"))});
+    std::string fk, nk, trCont;
+    for (int page = 0; page < 20; page++) {
+        if (page > 0) std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        std::string query = "CANO=" + cano_ + "&ACNT_PRDT_CD=" + acntPrdtCd_ +
+                             "&AFHR_FLPR_YN=N&OFL_YN=&INQR_DVSN=02&UNPR_DVSN=01"
+                             "&FUND_STTL_ICLD_YN=N&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00"
+                             "&CTX_AREA_FK100=" + urlEncode(fk) + "&CTX_AREA_NK100=" + urlEncode(nk);
+        auto body = request("/uapi/domestic-stock/v1/trading/inquire-balance", "GET", trId, query, true, &trCont);
+        auto j = json::parse(body);
+
+        if (j.value("rt_cd", "1") != "0")
+            throw std::runtime_error("balance query rejected: " + j.value("msg_cd", "") + " " + j.value("msg1", body));
+
+        for (auto& row : j.at("output1")) {
+            int qty = std::stoi(row.value("hldg_qty", "0"));
+            if (qty <= 0) continue; // KIS keeps zero-qty rows for stocks fully sold earlier
+            result.push_back({row.value("pdno", ""), row.value("prdt_name", ""), qty,
+                               std::stod(row.value("pchs_avg_pric", "0"))});
+        }
+        if (trCont != "F" && trCont != "M") return result;
+        trCont = "N";
+        fk = j.value("ctx_area_fk100", "");
+        nk = j.value("ctx_area_nk100", "");
     }
-    return result;
+    // 잘린 잔고를 전부인 것처럼 돌려주면 총자산/리밸런스가 틀어지므로 실패 처리
+    throw std::runtime_error("inquire-balance: too many pages");
 }
 
 std::vector<PendingOrder> KisClient::getPendingOrders() {

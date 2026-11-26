@@ -38,6 +38,11 @@ Response request(const std::wstring& host, int port, const std::wstring& path, c
             WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size, WINHTTP_NO_HEADER_INDEX);
         resp.status = (int)statusCode;
 
+        wchar_t trCont[8] = {};
+        DWORD trContSize = sizeof(trCont);
+        if (WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM, L"tr_cont", trCont, &trContSize, WINHTTP_NO_HEADER_INDEX))
+            for (const wchar_t* c = trCont; *c; ++c) resp.trCont += (char)*c;
+
         DWORD avail = 0;
         while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0) {
             std::string chunk(avail, '\0');

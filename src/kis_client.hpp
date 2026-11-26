@@ -34,7 +34,8 @@ public:
 private:
     std::string request(const std::string& path, const std::string& method,
                          const std::string& trId, const std::string& queryOrBody,
-                         bool isQuery);
+                         bool isQuery,
+                         std::string* trCont = nullptr); // 연속조회: 넣은 값을 요청 헤더로, 응답 헤더를 돌려받음
 
     std::string appkey_, appsecret_, cano_, acntPrdtCd_;
     std::wstring host_;
